@@ -1,5 +1,4 @@
-use std::io::Write;
-use std::path::Path;
+use std::io::{Seek, Write};
 
 use crate::dji::{FlightMeta, FlightStats};
 
@@ -87,22 +86,26 @@ fn non_empty(s: &str) -> &str {
     }
 }
 
-pub fn write_kmz(out_path: &Path, kml: &str) -> Result<(), String> {
-    let file = std::fs::File::create(out_path).map_err(|e| e.to_string())?;
-    let mut zip = zip::ZipWriter::new(file);
+/// Write `kml` as the `doc.kml` entry of a `.kmz` (zip) archive to `writer`.
+/// Generic over `Write + Seek` so the same function serves both
+/// `std::fs::File` (native, writing directly to disk) and
+/// `std::io::Cursor<Vec<u8>>` (web, building the file entirely in memory
+/// before handing the bytes to JS for download) — same body either way.
+pub fn write_kmz<W: Write + Seek>(writer: W, kml: &str) -> Result<W, String> {
+    let mut zip = zip::ZipWriter::new(writer);
     let options: zip::write::FileOptions<'_, ()> =
         zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
     zip.start_file("doc.kml", options)
         .map_err(|e| e.to_string())?;
     zip.write_all(kml.as_bytes()).map_err(|e| e.to_string())?;
-    zip.finish().map_err(|e| e.to_string())?;
-    Ok(())
+    zip.finish().map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use chrono::TimeZone;
+    use std::io::Cursor;
 
     fn synthetic_points() -> Vec<(f64, f64, f64)> {
         vec![
@@ -155,17 +158,13 @@ mod tests {
             max_speed_ms: 5.0,
         };
         let kml = build_kml(&meta, &stats, &synthetic_points());
-        let out_path = std::env::temp_dir().join("dji2kmz_test_output.kmz");
-        write_kmz(&out_path, &kml).expect("write_kmz should succeed");
-        assert!(out_path.exists());
+        let cursor = write_kmz(Cursor::new(Vec::new()), &kml).expect("write_kmz should succeed");
+        let bytes = cursor.into_inner();
+        assert!(!bytes.is_empty());
 
         // Confirm it round-trips as a valid zip with a doc.kml entry
-        let file = std::fs::File::open(&out_path).unwrap();
-        let mut archive = zip::ZipArchive::new(file).unwrap();
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
         let entry = archive.by_name("doc.kml").expect("doc.kml entry should exist");
         assert!(entry.size() > 0);
-        drop(entry);
-
-        let _ = std::fs::remove_file(&out_path);
     }
 }

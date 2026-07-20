@@ -1,16 +1,14 @@
-[package]
-name = "dji2kmz"
+[workspace]
+resolver = "3"
+members = ["core", "native", "web"]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
 
-[dependencies]
-chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
+[workspace.dependencies]
 dji-log-parser = "0.5.7"
-eframe = "0.35.0"
-egui = "0.35.0"
-env_logger = "0.11.11"
-log = "0.4.33"
-rfd = "0.17.2"
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
 thiserror = "2.0.19"
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 

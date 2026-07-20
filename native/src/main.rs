@@ -1,7 +1,6 @@
 mod app;
 mod config;
 mod dji;
-mod kml;
 mod progress;
 
 fn main() -> eframe::Result {

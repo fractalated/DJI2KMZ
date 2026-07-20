@@ -1,0 +1,13 @@
+[package]
+name = "dji2kmz"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+dji2kmz-core = { path = "../core" }
+dji-log-parser.workspace = true
+eframe = "0.35.0"
+egui = "0.35.0"
+env_logger = "0.11.11"
+log = "0.4.33"
+rfd = "0.17.2"

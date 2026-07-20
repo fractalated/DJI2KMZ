@@ -1,0 +1,23 @@
+[package]
+name = "dji2kmz-web"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+dji2kmz-core = { path = "../core" }
+dji-log-parser.workspace = true
+wasm-bindgen = "0.2"
+js-sys = "0.3"
+console_error_panic_hook = "0.1"
+wasm-bindgen-futures = "0.4.76"
+
+[package.metadata.wasm-pack.profile.release]
+# The bundled wasm-opt version predates the bulk-memory instructions the
+# installed Rust toolchain emits by default for wasm32-unknown-unknown,
+# causing wasm-opt's validator to reject an otherwise-correct binary.
+# wasm-opt is a size/speed optimization pass only — skipping it doesn't
+# affect correctness, only final binary size.
+wasm-opt = false

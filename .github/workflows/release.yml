@@ -24,7 +24,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Build
-        run: cargo build --release
+        run: cargo build --release -p dji2kmz
 
       # Always available from the Actions run (no tag needed) — the easy
       # way to grab a build without learning about git tags/releases.
@@ -53,3 +53,43 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           files: release-assets/*
+
+  build-web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-pack
+
+      - name: Build wasm bundle
+        run: wasm-pack build web --target web --release --out-dir pkg
+
+      - name: Assemble static site
+        run: |
+          mkdir -p site
+          cp web/static/index.html site/
+          cp web/pkg/dji2kmz_web.js web/pkg/dji2kmz_web_bg.wasm site/
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy-web:
+    needs: build-web
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

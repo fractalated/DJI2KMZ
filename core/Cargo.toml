@@ -1,0 +1,10 @@
+[package]
+name = "dji2kmz-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+dji-log-parser.workspace = true
+chrono.workspace = true
+thiserror.workspace = true
+zip.workspace = true

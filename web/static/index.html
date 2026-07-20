@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DJI2KMZ — Web</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 640px; margin: 2rem auto; padding: 0 1rem; }
+    label { display: block; margin: 0.75rem 0 0.25rem; font-weight: 600; }
+    input[type="text"] { width: 100%; box-sizing: border-box; padding: 0.4rem; }
+    button { margin-top: 0.75rem; padding: 0.5rem 1rem; cursor: pointer; }
+    button:disabled { cursor: not-allowed; opacity: 0.5; }
+    #progress { margin-top: 1rem; font-weight: 600; }
+    #errors { color: #b00020; }
+    #errors:empty { display: none; }
+  </style>
+</head>
+<body>
+  <h1>DJI2KMZ — Web</h1>
+  <p>Batch-convert DJI flight logs (.txt) into flight-path KMZ files, right
+     in your browser — nothing is uploaded anywhere except a small
+     decryption-key lookup DJI requires for newer (encrypted) logs.</p>
+
+  <label for="apiKey">API Key</label>
+  <input id="apiKey" type="text">
+
+  <label for="fileInput">DJI .txt log files</label>
+  <input id="fileInput" type="file" multiple accept=".txt">
+
+  <button id="convertBtn" disabled>Convert</button>
+
+  <p id="progress"></p>
+  <ul id="errors"></ul>
+  <button id="downloadBtn" style="display:none">Download All (.zip)</button>
+
+  <script type="module">
+    import init, { convert_log, default_api_key, ZipBundle } from "./dji2kmz_web.js";
+
+    // Filled in after the Cloudflare Worker's first `wrangler deploy`.
+    const PROXY_URL = "https://dji2kmz-keychain-proxy.YOUR-SUBDOMAIN.workers.dev";
+
+    const apiKeyEl = document.getElementById("apiKey");
+    const fileInput = document.getElementById("fileInput");
+    const convertBtn = document.getElementById("convertBtn");
+    const progressEl = document.getElementById("progress");
+    const errorsEl = document.getElementById("errors");
+    const downloadBtn = document.getElementById("downloadBtn");
+    let zipBytes = null;
+
+    const ready = init().then(() => {
+      apiKeyEl.value = default_api_key();
+    });
+
+    fileInput.addEventListener("change", () => {
+      convertBtn.disabled = fileInput.files.length === 0;
+    });
+
+    convertBtn.addEventListener("click", async () => {
+      await ready;
+      const files = Array.from(fileInput.files);
+      errorsEl.innerHTML = "";
+      downloadBtn.style.display = "none";
+      zipBytes = null;
+      convertBtn.disabled = true;
+
+      const bundle = new ZipBundle();
+      const usedNames = new Set();
+      let succeeded = 0;
+
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        progressEl.textContent = `Converting ${i} of ${files.length} — ${file.name}`;
+
+        try {
+          const bytes = new Uint8Array(await file.arrayBuffer());
+          const stem = file.name.replace(/\.txt$/i, "");
+          const kmz = await convert_log(bytes, stem, apiKeyEl.value, PROXY_URL);
+
+          let outName = `${stem}.kmz`;
+          let n = 2;
+          while (usedNames.has(outName)) outName = `${stem} (${n++}).kmz`;
+          usedNames.add(outName);
+
+          bundle.add_file(outName, kmz);
+          succeeded++;
+        } catch (err) {
+          const li = document.createElement("li");
+          li.textContent = `${file.name}: ${err && err.message ? err.message : err}`;
+          errorsEl.appendChild(li);
+        }
+      }
+
+      if (succeeded > 0) {
+        zipBytes = bundle.finish();
+        downloadBtn.style.display = "";
+      }
+
+      const errCount = errorsEl.children.length;
+      progressEl.textContent =
+        `Converted ${succeeded} of ${files.length} files.` +
+        (errCount > 0 ? ` ${errCount} error(s).` : "");
+      convertBtn.disabled = false;
+    });
+
+    downloadBtn.addEventListener("click", () => {
+      if (!zipBytes) return;
+      const blob = new Blob([zipBytes], { type: "application/zip" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "dji2kmz-output.zip";
+      a.click();
+      URL.revokeObjectURL(url);
+    });
+  </script>
+</body>
+</html>

@@ -1,8 +1,5 @@
-use std::panic::AssertUnwindSafe;
-use std::path::{Path, PathBuf};
-
 use chrono::{DateTime, Utc};
-use dji_log_parser::layout::auxiliary::Department;
+use dji_log_parser::keychain::{KeychainFeaturePoint, KeychainsRequest};
 use dji_log_parser::layout::details::Details;
 use dji_log_parser::DJILog;
 
@@ -30,14 +27,9 @@ pub struct FlightMeta {
 }
 
 impl FlightMeta {
-    fn from_details(details: &Details, input_path: &Path) -> Self {
-        let file_stem = input_path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("Flight")
-            .to_string();
+    fn from_details(details: &Details, file_stem: &str) -> Self {
         let display_name = if details.aircraft_name.trim().is_empty() {
-            file_stem
+            file_stem.to_string()
         } else {
             details.aircraft_name.clone()
         };
@@ -109,57 +101,41 @@ fn haversine_m(a: (f64, f64), b: (f64, f64)) -> f64 {
     2.0 * EARTH_RADIUS_M * h.sqrt().asin()
 }
 
-pub struct ConvertOutcome {
-    pub output_path: PathBuf,
+pub struct ConversionResult {
+    pub kml: String,
     pub point_count: usize,
 }
 
-/// Fetch the decryption keychain for a v13+ log. Tries the standard
-/// (log-determined) department first; some third-party-app-recorded logs
-/// only succeed against DJI's API when forced to the DJIFly department, so
-/// retry with that override on failure before giving up.
-fn fetch_keychains_with_fallback(
-    parser: &DJILog,
-    api_key: &str,
-) -> dji_log_parser::Result<Vec<Vec<dji_log_parser::keychain::KeychainFeaturePoint>>> {
-    match parser.fetch_keychains(api_key) {
-        Ok(keychains) => Ok(keychains),
-        Err(_) => {
-            let request =
-                parser.keychains_request_with_custom_params(Some(Department::DJIFly), None)?;
-            request.fetch(api_key, None)
-        }
-    }
+/// Parse raw `.txt` bytes into a `DJILog`. Platform-agnostic (pure
+/// `binrw`-over-`Vec<u8>` parsing, works identically on native and wasm32).
+/// Panics on truncated/corrupt input are the caller's responsibility to
+/// guard against — native wraps this in `catch_unwind`; wasm relies on
+/// wasm-bindgen converting a panic into a catchable JS exception instead,
+/// since `catch_unwind` isn't reliable on stable wasm32.
+pub fn parse_bytes(bytes: Vec<u8>) -> Result<DJILog, ConvertError> {
+    DJILog::from_bytes(bytes).map_err(ConvertError::Parse)
 }
 
-/// Parse one DJI `.txt` flight log and write its flight path to a `.kmz`
-/// file in `output_dir`. One bad/corrupt file must never abort a batch run,
-/// so parsing is wrapped in `catch_unwind` — the underlying crate can panic
-/// on truncated/malformed input.
-pub fn convert_file(
-    input_path: &Path,
-    output_dir: &Path,
-    api_key: &str,
-) -> Result<ConvertOutcome, ConvertError> {
-    let bytes = std::fs::read(input_path)?;
+/// Build the keychain request for a v13+ (encrypted) log, or `None` if the
+/// log doesn't need one. This only builds the request — actually fetching
+/// it (sync native `ureq` vs async wasm `fetch()` through a CORS proxy) is
+/// platform-specific and lives outside `core`.
+pub fn keychain_request(parser: &DJILog) -> Result<Option<KeychainsRequest>, ConvertError> {
+    if parser.version < 13 {
+        return Ok(None);
+    }
+    Ok(Some(parser.keychains_request().map_err(ConvertError::Parse)?))
+}
 
-    let parser = match std::panic::catch_unwind(move || DJILog::from_bytes(bytes)) {
-        Ok(Ok(parser)) => parser,
-        Ok(Err(e)) => return Err(ConvertError::Parse(e)),
-        Err(_) => return Err(ConvertError::Panic),
-    };
-
-    let keychains = if parser.version >= 13 {
-        Some(fetch_keychains_with_fallback(&parser, api_key)?)
-    } else {
-        None
-    };
-
-    let frames = match std::panic::catch_unwind(AssertUnwindSafe(|| parser.frames(keychains))) {
-        Ok(Ok(frames)) => frames,
-        Ok(Err(e)) => return Err(ConvertError::Parse(e)),
-        Err(_) => return Err(ConvertError::Panic),
-    };
+/// Given a parsed log and its already-fetched keychains (if any), extract
+/// the flight path, compute stats, and build the KML string. Platform-
+/// agnostic — no file I/O, no HTTP.
+pub fn finish_conversion(
+    parser: &DJILog,
+    keychains: Option<Vec<Vec<KeychainFeaturePoint>>>,
+    file_stem: &str,
+) -> Result<ConversionResult, ConvertError> {
+    let frames = parser.frames(keychains).map_err(ConvertError::Parse)?;
 
     // Flight path only: filter to finite, in-range, non-placeholder GPS
     // points and keep them in original (chronological) frame order.
@@ -180,40 +156,12 @@ pub fn convert_file(
         return Err(ConvertError::NoTrack);
     }
 
-    let meta = FlightMeta::from_details(&parser.details, input_path);
+    let meta = FlightMeta::from_details(&parser.details, file_stem);
     let stats = FlightStats::compute(&parser.details, &frames, &points);
-
     let kml = crate::kml::build_kml(&meta, &stats, &points);
 
-    let file_stem = input_path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("flight");
-    let output_path = output_dir.join(file_stem).with_extension("kmz");
-    crate::kml::write_kmz(&output_path, &kml).map_err(ConvertError::Kmz)?;
-
-    Ok(ConvertOutcome {
-        output_path,
+    Ok(ConversionResult {
+        kml,
         point_count: points.len(),
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn converts_a_real_sample_log() {
-        let fixture = Path::new("tests/fixtures/sample.txt");
-        if !fixture.exists() {
-            eprintln!("skipping: tests/fixtures/sample.txt not present");
-            return;
-        }
-        let out_dir = std::env::temp_dir();
-        let api_key = crate::config::resolve_api_key();
-        let outcome = convert_file(fixture, &out_dir, &api_key).expect("conversion should succeed");
-        assert!(outcome.point_count > 0);
-        assert!(outcome.output_path.exists());
-        let _ = std::fs::remove_file(&outcome.output_path);
-    }
 }
