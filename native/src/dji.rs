@@ -6,10 +6,18 @@ use dji_log_parser::layout::auxiliary::Department;
 use dji_log_parser::DJILog;
 
 pub use dji2kmz_core::dji::ConvertError;
+use dji2kmz_core::dji::FlightData;
 
 pub struct ConvertOutcome {
     pub output_path: PathBuf,
     pub point_count: usize,
+    /// This flight's raw parsed data, so the caller can accumulate it
+    /// across a batch for the merged multi-flight KMZ.
+    pub flight_data: FlightData,
+    /// The `MM-DD-YYYY` local date used in `output_path`'s filename, so the
+    /// caller can compute the merged KMZ's date range without re-deriving
+    /// it from the original filename.
+    pub local_date: String,
 }
 
 /// Fetch the decryption keychain for a v13+ log. Tries the standard
@@ -30,10 +38,32 @@ fn fetch_keychains_with_fallback(
     }
 }
 
+/// Appends " (2)", " (3)", ... if `{base_name}.kmz` already exists in
+/// `output_dir`, so two flights that land on the same computed name in one
+/// batch run don't silently overwrite each other.
+fn unique_output_path(output_dir: &Path, base_name: &str) -> PathBuf {
+    let candidate = output_dir.join(base_name).with_extension("kmz");
+    if !candidate.exists() {
+        return candidate;
+    }
+    let mut n = 2;
+    loop {
+        let candidate = output_dir
+            .join(format!("{base_name} ({n})"))
+            .with_extension("kmz");
+        if !candidate.exists() {
+            return candidate;
+        }
+        n += 1;
+    }
+}
+
 /// Parse one DJI `.txt` flight log and write its flight path to a `.kmz`
-/// file in `output_dir`. One bad/corrupt file must never abort a batch run,
-/// so parsing is wrapped in `catch_unwind` — the underlying crate can panic
-/// on truncated/malformed input.
+/// file in `output_dir`, named from the flight's local date/time (parsed
+/// from the original filename) and the name of the folder `input_path`
+/// lives in. One bad/corrupt file must never abort a batch run, so parsing
+/// is wrapped in `catch_unwind` — the underlying crate can panic on
+/// truncated/malformed input.
 pub fn convert_file(
     input_path: &Path,
     output_dir: &Path,
@@ -48,10 +78,7 @@ pub fn convert_file(
     };
 
     let keychains = if parser.version >= 13 {
-        Some(
-            fetch_keychains_with_fallback(&parser, api_key)
-                .map_err(ConvertError::Parse)?,
-        )
+        Some(fetch_keychains_with_fallback(&parser, api_key).map_err(ConvertError::Parse)?)
     } else {
         None
     };
@@ -61,21 +88,40 @@ pub fn convert_file(
         .and_then(|s| s.to_str())
         .unwrap_or("flight");
 
-    let result = match std::panic::catch_unwind(AssertUnwindSafe(|| {
-        dji2kmz_core::dji::finish_conversion(&parser, keychains, file_stem)
+    let flight_data = match std::panic::catch_unwind(AssertUnwindSafe(|| {
+        dji2kmz_core::dji::extract_flight_data(&parser, keychains, file_stem)
     })) {
-        Ok(Ok(result)) => result,
+        Ok(Ok(data)) => data,
         Ok(Err(e)) => return Err(e),
         Err(_) => return Err(ConvertError::Panic),
     };
 
-    let output_path = output_dir.join(file_stem).with_extension("kmz");
+    let (meta, stats, points) = &flight_data;
+    let point_count = points.len();
+    let kml = dji2kmz_core::kml::build_kml(meta, stats, points);
+
+    let original_filename = input_path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(file_stem);
+    let folder_name = input_path
+        .parent()
+        .and_then(|p| p.file_name())
+        .and_then(|s| s.to_str())
+        .unwrap_or("Flight_Logs");
+
+    let (base_name, local_date) =
+        dji2kmz_core::naming::individual_filename(original_filename, meta.start_time, folder_name);
+    let output_path = unique_output_path(output_dir, &base_name);
+
     let file = std::fs::File::create(&output_path)?;
-    dji2kmz_core::kml::write_kmz(file, &result.kml).map_err(ConvertError::Kmz)?;
+    dji2kmz_core::kml::write_kmz(file, &kml).map_err(ConvertError::Kmz)?;
 
     Ok(ConvertOutcome {
         output_path,
-        point_count: result.point_count,
+        point_count,
+        flight_data,
+        local_date,
     })
 }
 

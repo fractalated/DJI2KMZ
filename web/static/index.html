@@ -24,8 +24,12 @@
   <label for="apiKey">API Key</label>
   <input id="apiKey" type="text">
 
-  <label for="fileInput">DJI .txt log files</label>
-  <input id="fileInput" type="file" multiple accept=".txt">
+  <label for="fileInput">Folder containing DJI .txt logs</label>
+  <input id="fileInput" type="file" webkitdirectory>
+  <p style="color:#666; font-size:0.9em; margin-top:0.25rem;">
+    Everything else in the folder (photos, videos, other file types) is
+    ignored — only <code>.txt</code> files are converted.
+  </p>
 
   <button id="convertBtn" disabled>Convert</button>
 
@@ -34,7 +38,7 @@
   <button id="downloadBtn" style="display:none">Download All (.zip)</button>
 
   <script type="module">
-    import init, { convert_log, default_api_key, ZipBundle } from "./dji2kmz_web.js";
+    import init, { default_api_key, ZipBundle, MergedKmlBuilder } from "./dji2kmz_web.js";
 
     // Filled in after the Cloudflare Worker's first `wrangler deploy`.
     const PROXY_URL = "https://dji2kmz-keychain-proxy.fractalated.workers.dev";
@@ -57,13 +61,21 @@
 
     convertBtn.addEventListener("click", async () => {
       await ready;
-      const files = Array.from(fileInput.files);
+      const allFiles = Array.from(fileInput.files);
+      const files = allFiles.filter((f) => f.name.toLowerCase().endsWith(".txt"));
       errorsEl.innerHTML = "";
       downloadBtn.style.display = "none";
       zipBytes = null;
       convertBtn.disabled = true;
 
-      const bundle = new ZipBundle();
+      // webkitRelativePath looks like "Midland Airport Flight Logs/DJIFlightRecord_....txt" —
+      // the first path segment is the folder the user selected.
+      const folderName = allFiles.length > 0
+        ? allFiles[0].webkitRelativePath.split("/")[0]
+        : "Flight_Logs";
+
+      const outerZip = new ZipBundle();
+      const builder = new MergedKmlBuilder(folderName);
       const usedNames = new Set();
       let succeeded = 0;
 
@@ -73,15 +85,14 @@
 
         try {
           const bytes = new Uint8Array(await file.arrayBuffer());
-          const stem = file.name.replace(/\.txt$/i, "");
-          const kmz = await convert_log(bytes, stem, apiKeyEl.value, PROXY_URL);
+          const result = await builder.add_and_convert(bytes, file.name, apiKeyEl.value, PROXY_URL);
 
-          let outName = `${stem}.kmz`;
+          let outName = `${result.filename}.kmz`;
           let n = 2;
-          while (usedNames.has(outName)) outName = `${stem} (${n++}).kmz`;
+          while (usedNames.has(outName)) outName = `${result.filename} (${n++}).kmz`;
           usedNames.add(outName);
 
-          bundle.add_file(outName, kmz);
+          outerZip.add_file(outName, result.bytes);
           succeeded++;
         } catch (err) {
           const li = document.createElement("li");
@@ -90,8 +101,18 @@
         }
       }
 
+      // Merged multi-flight KMZ, produced alongside the individual files
+      // (not instead of them) whenever at least one flight converted.
       if (succeeded > 0) {
-        zipBytes = bundle.finish();
+        try {
+          const mergedBytes = builder.finish();
+          outerZip.add_file(`${builder.title()}.kmz`, mergedBytes);
+        } catch (err) {
+          const li = document.createElement("li");
+          li.textContent = `Merged KMZ: ${err && err.message ? err.message : err}`;
+          errorsEl.appendChild(li);
+        }
+        zipBytes = outerZip.finish();
         downloadBtn.style.display = "";
       }
 

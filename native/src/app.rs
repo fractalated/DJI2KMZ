@@ -61,6 +61,9 @@ impl DjiKmzApp {
         }
 
         std::thread::spawn(move || {
+            let mut flights = Vec::new();
+            let mut dates = Vec::new();
+
             for file in files {
                 let name = file
                     .file_name()
@@ -72,17 +75,56 @@ impl DjiKmzApp {
                     state.current_file = Some(name.clone());
                 }
 
-                if let Err(e) = crate::dji::convert_file(&file, &output, &api_key) {
-                    if let Ok(mut state) = progress.lock() {
-                        state.errors.push(ProgressError {
-                            file: name.clone(),
-                            message: e.to_string(),
-                        });
+                match crate::dji::convert_file(&file, &output, &api_key) {
+                    Ok(outcome) => {
+                        dates.push(outcome.local_date);
+                        flights.push(outcome.flight_data);
+                    }
+                    Err(e) => {
+                        if let Ok(mut state) = progress.lock() {
+                            state.errors.push(ProgressError {
+                                file: name.clone(),
+                                message: e.to_string(),
+                            });
+                        }
                     }
                 }
 
                 if let Ok(mut state) = progress.lock() {
                     state.completed += 1;
+                }
+            }
+
+            // Merged multi-flight KMZ, produced alongside the individual
+            // per-flight files (not instead of them) whenever at least one
+            // flight converted successfully.
+            if !flights.is_empty() {
+                let folder_name = input
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("Flight_Logs");
+                let title = dji2kmz_core::naming::merged_title(folder_name, &dates);
+                let merged_kml = dji2kmz_core::kml::build_merged_kml(&title, &flights);
+                let merged_path = output.join(&title).with_extension("kmz");
+                match std::fs::File::create(&merged_path) {
+                    Ok(file) => {
+                        if let Err(e) = dji2kmz_core::kml::write_kmz(file, &merged_kml) {
+                            if let Ok(mut state) = progress.lock() {
+                                state.errors.push(ProgressError {
+                                    file: title.clone(),
+                                    message: format!("Failed to write merged KMZ: {e}"),
+                                });
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        if let Ok(mut state) = progress.lock() {
+                            state.errors.push(ProgressError {
+                                file: title.clone(),
+                                message: format!("Failed to create merged KMZ: {e}"),
+                            });
+                        }
+                    }
                 }
             }
 
@@ -138,7 +180,99 @@ mod tests {
                 assert_eq!(snapshot.total, 1, "only the .txt file should be counted, not the .pdf");
                 assert_eq!(snapshot.completed, 1);
                 assert!(snapshot.errors.is_empty(), "errors: {:?}", snapshot.errors.iter().map(|e| &e.message).collect::<Vec<_>>());
-                assert!(output_dir.join("sample.kmz").exists());
+
+                // Individual file (new date/time/folder-name format) +
+                // merged file should both land in the output folder.
+                let kmz_files: Vec<_> = std::fs::read_dir(&output_dir)
+                    .unwrap()
+                    .filter_map(|e| e.ok())
+                    .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("kmz"))
+                    .collect();
+                assert_eq!(kmz_files.len(), 2, "expected one individual + one merged .kmz, found: {:?}", kmz_files.iter().map(|e| e.file_name()).collect::<Vec<_>>());
+
+                let merged = kmz_files.iter().find(|e| {
+                    e.file_name().to_string_lossy().contains("Flight_Logs")
+                });
+                assert!(merged.is_some(), "expected a merged file with 'Flight_Logs' in its name");
+                break;
+            }
+            assert!(Instant::now() < deadline, "conversion did not finish in time");
+            std::thread::sleep(Duration::from_millis(100));
+        }
+
+        let _ = std::fs::remove_dir_all(&input_dir);
+        let _ = std::fs::remove_dir_all(&output_dir);
+    }
+
+    /// Two copies of the same real log land on the identical computed
+    /// output name (same embedded date/time, same folder) — this exercises
+    /// the collision-dedup suffix against real data, and confirms the
+    /// merged KMZ ends up with both flights as separate placemarks even
+    /// though they're same-day (single-date title, not a range).
+    #[test]
+    fn dedupes_identical_filenames_and_merges_both_flights() {
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/sample.txt");
+        if !fixture.exists() {
+            eprintln!("skipping: tests/fixtures/sample.txt not present");
+            return;
+        }
+
+        let input_dir = std::env::temp_dir().join("dji2kmz_dedupe_test_input");
+        let output_dir = std::env::temp_dir().join("dji2kmz_dedupe_test_output");
+        let _ = std::fs::remove_dir_all(&input_dir);
+        let _ = std::fs::remove_dir_all(&output_dir);
+        std::fs::create_dir_all(&input_dir).unwrap();
+        std::fs::create_dir_all(&output_dir).unwrap();
+
+        // Same content, and both filenames embed the identical
+        // "[08-18-13]" bracket time (as if the OS appended " (1)" to a
+        // duplicate download) — both should extract the same local
+        // date/time and therefore compute the same base output name.
+        std::fs::copy(&fixture, input_dir.join("DJIFlightRecord_2026-06-15_[08-18-13].txt")).unwrap();
+        std::fs::copy(&fixture, input_dir.join("DJIFlightRecord_2026-06-15_[08-18-13] (1).txt")).unwrap();
+
+        let app = DjiKmzApp {
+            input_folder: Some(input_dir.clone()),
+            output_folder: Some(output_dir.clone()),
+            ..Default::default()
+        };
+        app.start_conversion();
+
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let snapshot = app.progress.lock().unwrap().clone();
+            if snapshot.done {
+                assert_eq!(snapshot.completed, 2);
+                assert!(snapshot.errors.is_empty(), "errors: {:?}", snapshot.errors.iter().map(|e| &e.message).collect::<Vec<_>>());
+
+                let kmz_files: Vec<String> = std::fs::read_dir(&output_dir)
+                    .unwrap()
+                    .filter_map(|e| e.ok())
+                    .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("kmz"))
+                    .map(|e| e.file_name().to_string_lossy().to_string())
+                    .collect();
+
+                // 2 individual (one deduped with " (2)") + 1 merged = 3 files.
+                assert_eq!(kmz_files.len(), 3, "found: {kmz_files:?}");
+                assert!(
+                    kmz_files.iter().any(|n| n.contains("(2)")),
+                    "expected a collision-deduped filename among: {kmz_files:?}"
+                );
+
+                let merged_name = kmz_files.iter().find(|n| n.contains("Flight_Logs"))
+                    .unwrap_or_else(|| panic!("expected a merged file among: {kmz_files:?}"));
+                // Both flights are the same day, so the title should carry
+                // a single date, not a "--" range.
+                assert!(!merged_name.contains("--"), "same-day merge shouldn't produce a date range: {merged_name}");
+
+                let merged_bytes = std::fs::read(output_dir.join(merged_name)).unwrap();
+                let mut archive = zip::ZipArchive::new(std::io::Cursor::new(merged_bytes)).unwrap();
+                let mut kml = String::new();
+                std::io::Read::read_to_string(&mut archive.by_name("doc.kml").unwrap(), &mut kml).unwrap();
+                let placemark_count = kml.matches("<Placemark>").count();
+                assert_eq!(placemark_count, 2, "merged KMZ should contain both flights as separate placemarks");
+
                 break;
             }
             assert!(Instant::now() < deadline, "conversion did not finish in time");

@@ -32,13 +32,35 @@ fn format_duration(total_secs: f64) -> String {
 /// box rather than as separate KML structures.
 pub fn build_kml(meta: &FlightMeta, stats: &FlightStats, points: &[(f64, f64, f64)]) -> String {
     let name = escape_xml(&meta.display_name);
+    let placemark = placemark_block(meta, stats, points);
 
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+  <Document>
+    <name>{name}</name>
+    <Style id="flightPath">
+      <LineStyle>
+        <color>ff0080ff</color>
+        <width>3</width>
+      </LineStyle>
+    </Style>
+{placemark}
+  </Document>
+</kml>"#
+    )
+}
+
+/// One `<Placemark>` block for a single flight — the same content
+/// `build_kml` produces inside its `<Document>`, factored out so it can be
+/// repeated once per flight inside a merged multi-flight document too.
+fn placemark_block(meta: &FlightMeta, stats: &FlightStats, points: &[(f64, f64, f64)]) -> String {
+    let name = escape_xml(&meta.display_name);
     let coords = points
         .iter()
         .map(|(lon, lat, alt)| format!("{lon},{lat},{alt}"))
         .collect::<Vec<_>>()
         .join(" ");
-
     let raw_description = format!(
         "Drone Model: {}\nAircraft Serial: {}\nAircraft Name: {}\nBattery Serial: {}\nStart Time: {}\nDuration: {}\nDistance: {:.0} m\nMax Altitude: {:.1} m\nMax Speed: {:.1} m/s",
         non_empty(&meta.model),
@@ -54,6 +76,32 @@ pub fn build_kml(meta: &FlightMeta, stats: &FlightStats, points: &[(f64, f64, f6
     let description = escape_cdata(&raw_description);
 
     format!(
+        r#"    <Placemark>
+      <name>{name}</name>
+      <description><![CDATA[{description}]]></description>
+      <styleUrl>#flightPath</styleUrl>
+      <LineString>
+        <altitudeMode>relativeToGround</altitudeMode>
+        <coordinates>{coords}</coordinates>
+      </LineString>
+    </Placemark>"#
+    )
+}
+
+/// Build one combined KML: a single `<Document>` with one shared line
+/// `<Style>` and one `<Placemark>` per flight. Each Placemark is
+/// independently toggleable in Google Earth's sidebar — no `<Folder>`
+/// wrapping needed for that — so this is effectively `build_kml` repeated
+/// once per flight inside one shared Document instead of one each.
+pub fn build_merged_kml(document_name: &str, flights: &[(FlightMeta, FlightStats, Vec<(f64, f64, f64)>)]) -> String {
+    let name = escape_xml(document_name);
+    let placemarks = flights
+        .iter()
+        .map(|(meta, stats, points)| placemark_block(meta, stats, points))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <kml xmlns="http://www.opengis.net/kml/2.2">
   <Document>
@@ -64,15 +112,7 @@ pub fn build_kml(meta: &FlightMeta, stats: &FlightStats, points: &[(f64, f64, f6
         <width>3</width>
       </LineStyle>
     </Style>
-    <Placemark>
-      <name>{name}</name>
-      <description><![CDATA[{description}]]></description>
-      <styleUrl>#flightPath</styleUrl>
-      <LineString>
-        <altitudeMode>relativeToGround</altitudeMode>
-        <coordinates>{coords}</coordinates>
-      </LineString>
-    </Placemark>
+{placemarks}
   </Document>
 </kml>"#
     )

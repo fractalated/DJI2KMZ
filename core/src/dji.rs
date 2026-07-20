@@ -106,6 +106,11 @@ pub struct ConversionResult {
     pub point_count: usize,
 }
 
+/// One flight's raw parsed data, kept separate from its rendered KML so it
+/// can be both rendered immediately (individual `.kmz`) and accumulated
+/// across a batch (merged multi-flight `.kmz`).
+pub type FlightData = (FlightMeta, FlightStats, Vec<(f64, f64, f64)>);
+
 /// Parse raw `.txt` bytes into a `DJILog`. Platform-agnostic (pure
 /// `binrw`-over-`Vec<u8>` parsing, works identically on native and wasm32).
 /// Panics on truncated/corrupt input are the caller's responsibility to
@@ -128,13 +133,16 @@ pub fn keychain_request(parser: &DJILog) -> Result<Option<KeychainsRequest>, Con
 }
 
 /// Given a parsed log and its already-fetched keychains (if any), extract
-/// the flight path, compute stats, and build the KML string. Platform-
-/// agnostic — no file I/O, no HTTP.
-pub fn finish_conversion(
+/// the flight path, compute stats, and build `FlightMeta`/`FlightStats`.
+/// Platform-agnostic — no file I/O, no HTTP, no KML rendering. Separate
+/// from `finish_conversion` so the same raw data can be both rendered
+/// immediately (one flight's `.kmz`) and accumulated across a batch (the
+/// merged multi-flight `.kmz`).
+pub fn extract_flight_data(
     parser: &DJILog,
     keychains: Option<Vec<Vec<KeychainFeaturePoint>>>,
     file_stem: &str,
-) -> Result<ConversionResult, ConvertError> {
+) -> Result<FlightData, ConvertError> {
     let frames = parser.frames(keychains).map_err(ConvertError::Parse)?;
 
     // Flight path only: filter to finite, in-range, non-placeholder GPS
@@ -158,10 +166,21 @@ pub fn finish_conversion(
 
     let meta = FlightMeta::from_details(&parser.details, file_stem);
     let stats = FlightStats::compute(&parser.details, &frames, &points);
+
+    Ok((meta, stats, points))
+}
+
+/// Given a parsed log and its already-fetched keychains (if any), build the
+/// finished single-flight KML string. Platform-agnostic — no file I/O, no
+/// HTTP.
+pub fn finish_conversion(
+    parser: &DJILog,
+    keychains: Option<Vec<Vec<KeychainFeaturePoint>>>,
+    file_stem: &str,
+) -> Result<ConversionResult, ConvertError> {
+    let (meta, stats, points) = extract_flight_data(parser, keychains, file_stem)?;
+    let point_count = points.len();
     let kml = crate::kml::build_kml(&meta, &stats, &points);
 
-    Ok(ConversionResult {
-        kml,
-        point_count: points.len(),
-    })
+    Ok(ConversionResult { kml, point_count })
 }

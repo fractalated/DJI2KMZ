@@ -1011,6 +1011,7 @@ dependencies = [
  "env_logger",
  "log",
  "rfd",
+ "zip",
 ]
 
 [[package]]
