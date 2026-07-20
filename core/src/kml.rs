@@ -32,7 +32,7 @@ fn format_duration(total_secs: f64) -> String {
 /// box rather than as separate KML structures.
 pub fn build_kml(meta: &FlightMeta, stats: &FlightStats, points: &[(f64, f64, f64)]) -> String {
     let name = escape_xml(&meta.display_name);
-    let placemark = placemark_block(meta, stats, points);
+    let placemark = placemark_block(&meta.display_name, meta, stats, points);
 
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -54,8 +54,14 @@ pub fn build_kml(meta: &FlightMeta, stats: &FlightStats, points: &[(f64, f64, f6
 /// One `<Placemark>` block for a single flight — the same content
 /// `build_kml` produces inside its `<Document>`, factored out so it can be
 /// repeated once per flight inside a merged multi-flight document too.
-fn placemark_block(meta: &FlightMeta, stats: &FlightStats, points: &[(f64, f64, f64)]) -> String {
-    let name = escape_xml(&meta.display_name);
+/// `name` is passed explicitly rather than derived from `meta` — in a
+/// single-flight KMZ it's the flight's own display name, but in a merged
+/// multi-flight KMZ every flight from the same aircraft would otherwise
+/// share the identical `display_name`, making them indistinguishable in
+/// Google Earth's sidebar. Callers pass whatever name should actually
+/// label this placemark.
+fn placemark_block(name: &str, meta: &FlightMeta, stats: &FlightStats, points: &[(f64, f64, f64)]) -> String {
+    let name = escape_xml(name);
     let coords = points
         .iter()
         .map(|(lon, lat, alt)| format!("{lon},{lat},{alt}"))
@@ -93,11 +99,23 @@ fn placemark_block(meta: &FlightMeta, stats: &FlightStats, points: &[(f64, f64, 
 /// independently toggleable in Google Earth's sidebar — no `<Folder>`
 /// wrapping needed for that — so this is effectively `build_kml` repeated
 /// once per flight inside one shared Document instead of one each.
-pub fn build_merged_kml(document_name: &str, flights: &[(FlightMeta, FlightStats, Vec<(f64, f64, f64)>)]) -> String {
+///
+/// `names[i]` labels `flights[i]`'s placemark — pass each flight's
+/// individual output filename (not `meta.display_name`, which is often
+/// identical across every flight from the same aircraft and wouldn't let
+/// someone tell placemarks apart in Google Earth's sidebar).
+pub fn build_merged_kml(
+    document_name: &str,
+    names: &[String],
+    flights: &[(FlightMeta, FlightStats, Vec<(f64, f64, f64)>)],
+) -> String {
     let name = escape_xml(document_name);
-    let placemarks = flights
+    let placemarks = names
         .iter()
-        .map(|(meta, stats, points)| placemark_block(meta, stats, points))
+        .zip(flights.iter())
+        .map(|(placemark_name, (meta, stats, points))| {
+            placemark_block(placemark_name, meta, stats, points)
+        })
         .collect::<Vec<_>>()
         .join("\n");
 
@@ -179,6 +197,45 @@ mod tests {
         assert!(kml.contains("-102.4419,31.5396,10"));
         assert!(kml.contains("Matrice350RTK"));
         assert!(kml.contains("relativeToGround"));
+    }
+
+    #[test]
+    fn merged_kml_labels_placemarks_by_name_not_shared_aircraft_name() {
+        // Two flights from the same aircraft share an identical
+        // display_name — the merged doc must still distinguish them using
+        // the per-flight names passed in, not meta.display_name.
+        fn make_flight() -> (FlightMeta, FlightStats, Vec<(f64, f64, f64)>) {
+            let meta = FlightMeta {
+                display_name: "Lythix | Ninja".into(),
+                model: "Matrice350RTK".into(),
+                aircraft_sn: "SN123".into(),
+                aircraft_name: "Lythix | Ninja".into(),
+                battery_sn: "BAT123".into(),
+                start_time: chrono::Utc.with_ymd_and_hms(2026, 6, 15, 8, 18, 13).unwrap(),
+            };
+            let stats = FlightStats {
+                duration_secs: 60.0,
+                total_distance_m: 100.0,
+                max_altitude_m: 10.0,
+                max_speed_ms: 5.0,
+            };
+            (meta, stats, synthetic_points())
+        }
+
+        let flights = vec![make_flight(), make_flight()];
+        let names = vec![
+            "06-15-2026_08-18_Midland_Airport".to_string(),
+            "06-15-2026_09-30_Midland_Airport".to_string(),
+        ];
+
+        let kml = build_merged_kml("Midland_Airport_Flight_Logs_06-15-2026", &names, &flights);
+
+        assert_eq!(kml.matches("<Placemark>").count(), 2);
+        assert!(kml.contains("<name>06-15-2026_08-18_Midland_Airport</name>"));
+        assert!(kml.contains("<name>06-15-2026_09-30_Midland_Airport</name>"));
+        // The shared aircraft name should NOT appear as a placemark name —
+        // only inside each placemark's description box.
+        assert!(!kml.contains("<name>Lythix | Ninja</name>"));
     }
 
     #[test]

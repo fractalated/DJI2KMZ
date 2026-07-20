@@ -93,6 +93,12 @@ pub struct MergedKmlBuilder {
     folder_name: String,
     flights: Vec<FlightData>,
     dates: Vec<String>,
+    // Same name each flight's individual .kmz gets, so its layer in the
+    // merged KMZ is identifiable — meta.display_name alone is often
+    // identical across every flight from the same aircraft. Doesn't
+    // reflect any collision-dedup suffix JS applies after add_and_convert
+    // returns (a known, accepted minor gap — collisions are rare).
+    names: Vec<String>,
 }
 
 #[wasm_bindgen]
@@ -107,6 +113,7 @@ impl MergedKmlBuilder {
             folder_name,
             flights: Vec::new(),
             dates: Vec::new(),
+            names: Vec::new(),
         }
     }
 
@@ -140,6 +147,7 @@ impl MergedKmlBuilder {
             &self.folder_name,
         );
         self.dates.push(local_date);
+        self.names.push(filename.clone());
 
         let cursor = dji2kmz_core::kml::write_kmz(std::io::Cursor::new(Vec::new()), &kml)
             .map_err(to_js_error)?;
@@ -165,7 +173,7 @@ impl MergedKmlBuilder {
             return Err(to_js_error("no flights to merge"));
         }
         let title = dji2kmz_core::naming::merged_title(&self.folder_name, &self.dates);
-        let kml = dji2kmz_core::kml::build_merged_kml(&title, &self.flights);
+        let kml = dji2kmz_core::kml::build_merged_kml(&title, &self.names, &self.flights);
         let cursor = dji2kmz_core::kml::write_kmz(std::io::Cursor::new(Vec::new()), &kml)
             .map_err(to_js_error)?;
         Ok(Uint8Array::from(cursor.into_inner().as_slice()))

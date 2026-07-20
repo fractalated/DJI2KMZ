@@ -63,6 +63,12 @@ impl DjiKmzApp {
         std::thread::spawn(move || {
             let mut flights = Vec::new();
             let mut dates = Vec::new();
+            // Same name as the individual .kmz file (minus extension, but
+            // including any " (2)" collision-dedup suffix), so a flight's
+            // layer in the merged KMZ is identifiable as the same flight —
+            // meta.display_name alone is often identical across every
+            // flight from the same aircraft.
+            let mut names = Vec::new();
 
             for file in files {
                 let name = file
@@ -77,6 +83,13 @@ impl DjiKmzApp {
 
                 match crate::dji::convert_file(&file, &output, &api_key) {
                     Ok(outcome) => {
+                        let placemark_name = outcome
+                            .output_path
+                            .file_stem()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("Flight")
+                            .to_string();
+                        names.push(placemark_name);
                         dates.push(outcome.local_date);
                         flights.push(outcome.flight_data);
                     }
@@ -104,7 +117,7 @@ impl DjiKmzApp {
                     .and_then(|s| s.to_str())
                     .unwrap_or("Flight_Logs");
                 let title = dji2kmz_core::naming::merged_title(folder_name, &dates);
-                let merged_kml = dji2kmz_core::kml::build_merged_kml(&title, &flights);
+                let merged_kml = dji2kmz_core::kml::build_merged_kml(&title, &names, &flights);
                 let merged_path = output.join(&title).with_extension("kmz");
                 match std::fs::File::create(&merged_path) {
                     Ok(file) => {
