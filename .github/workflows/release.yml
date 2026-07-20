@@ -1,0 +1,55 @@
+name: Build and Release
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            artifact_path: target/release/dji2kmz.exe
+            asset_name: dji2kmz-windows-x64.exe
+          - os: macos-latest
+            artifact_path: target/release/dji2kmz
+            asset_name: dji2kmz-macos-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build
+        run: cargo build --release
+
+      # Always available from the Actions run (no tag needed) — the easy
+      # way to grab a build without learning about git tags/releases.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset_name }}
+          path: ${{ matrix.artifact_path }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Flatten artifacts
+        run: |
+          mkdir release-assets
+          cp artifacts/dji2kmz-windows-x64.exe/dji2kmz.exe release-assets/dji2kmz-windows-x64.exe
+          cp artifacts/dji2kmz-macos-arm64/dji2kmz release-assets/dji2kmz-macos-arm64
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: release-assets/*

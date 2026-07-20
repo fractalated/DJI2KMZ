@@ -1,0 +1,5 @@
+/target
+
+# Real drone flight logs used for local testing — contain GPS/serial data,
+# never committed. Tests skip gracefully when this is absent.
+/tests/fixtures/
