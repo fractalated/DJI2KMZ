@@ -105,8 +105,11 @@
       // (not instead of them) whenever at least one flight converted.
       if (succeeded > 0) {
         try {
+          // title() must be read before finish(), which consumes the
+          // builder (wasm-bindgen invalidates it after a by-value call).
+          const mergedTitle = builder.title();
           const mergedBytes = builder.finish();
-          outerZip.add_file(`${builder.title()}.kmz`, mergedBytes);
+          outerZip.add_file(`${mergedTitle}.kmz`, mergedBytes);
         } catch (err) {
           const li = document.createElement("li");
           li.textContent = `Merged KMZ: ${err && err.message ? err.message : err}`;
