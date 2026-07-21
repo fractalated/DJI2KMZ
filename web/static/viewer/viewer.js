@@ -1,16 +1,10 @@
-import { pickDirectory, restoreDirectory, requestPermission, collectKmzFiles } from "./fs.js";
-import { buildLocationEntries, formatDateKey } from "./grouping.js";
-import { readKmlFromKmz, parseKml } from "./kml.js";
+import { pickDirectory, restoreDirectory, requestPermission, collectKmzFiles } from "../shared/fs.js";
+import { buildLocationEntries, formatDateKey, loadPlacemarks } from "../shared/grouping.js";
 import { initMap, setFlightLayer, removeFlightLayer, fitToCoordinates } from "./map.js";
 
 const connectRow = document.getElementById("connectRow");
 const locationList = document.getElementById("locationList");
 const map = initMap("map");
-
-// folderKey -> Promise<placemark[]>. Caching the in-flight promise (not
-// just the resolved value) dedupes a rapid double-click on the same
-// folder before its first load finishes.
-const flightCache = new Map();
 
 // A few distinguishable line colors, cycled per visible flight so
 // multiple simultaneously-checked flights (within or across locations)
@@ -27,23 +21,6 @@ function colorFor(layerId) {
   return flightColors.get(layerId);
 }
 
-function getPlacemarks(entry) {
-  if (!flightCache.has(entry.folderKey)) {
-    const files = entry.mergedFile ? [entry.mergedFile] : entry.individualFiles;
-    flightCache.set(
-      entry.folderKey,
-      (async () => {
-        const placemarks = [];
-        for (const file of files) {
-          placemarks.push(...parseKml(await readKmlFromKmz(file)));
-        }
-        return placemarks;
-      })(),
-    );
-  }
-  return flightCache.get(entry.folderKey);
-}
-
 function visibleLayerIds() {
   return Array.from(document.querySelectorAll(".flight-checklist input:checked")).map((el) => el.dataset.layerId);
 }
@@ -58,7 +35,7 @@ async function renderChecklist(entry, container) {
   container.innerHTML = "Loading…";
   let placemarks;
   try {
-    placemarks = await getPlacemarks(entry);
+    placemarks = await loadPlacemarks(entry);
   } catch (err) {
     container.textContent = `Failed to load: ${err.message ?? err}`;
     return;

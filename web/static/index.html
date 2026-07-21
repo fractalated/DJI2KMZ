@@ -123,7 +123,12 @@
 
         try {
           const bytes = new Uint8Array(await file.arrayBuffer());
-          const result = await builder.add_and_convert(bytes, file.name, apiKeyEl.value, PROXY_URL);
+          // Path within the selected folder (drops the top-level segment,
+          // which is the location, not part of the file's own identity) —
+          // e.g. "John_Smith/DJIFlightRecord_....txt" for a file in a
+          // pilot subfolder, or just "DJIFlightRecord_....txt" otherwise.
+          const relativePath = file.webkitRelativePath.split("/").slice(1).join("/");
+          const result = await builder.add_and_convert(bytes, relativePath, apiKeyEl.value, PROXY_URL);
 
           let outName = `${result.filename}.kmz`;
           let n = 2;

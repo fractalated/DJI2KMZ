@@ -32,19 +32,35 @@ impl DjiKmzApp {
         let api_key = self.api_key.clone();
         let progress = self.progress.clone();
 
-        let mut files: Vec<PathBuf> = std::fs::read_dir(&input)
-            .into_iter()
-            .flatten()
-            .filter_map(|entry| entry.ok())
-            .map(|entry| entry.path())
-            .filter(|path| {
-                path.is_file()
-                    && path
-                        .extension()
-                        .map(|ext| ext.eq_ignore_ascii_case("txt"))
-                        .unwrap_or(false)
-            })
-            .collect();
+        // One level of recursion: {input}/*.txt (no pilot subfolder) plus
+        // {input}/{Pilot Name}/*.txt (pilot subfolder). Deliberately not
+        // unbounded recursive walking — that's the viewer's job, not the
+        // converter's; this matches exactly the location -> optional
+        // pilot-subfolder -> files shape the naming convention expects.
+        fn is_txt_file(path: &std::path::Path) -> bool {
+            path.is_file()
+                && path
+                    .extension()
+                    .map(|ext| ext.eq_ignore_ascii_case("txt"))
+                    .unwrap_or(false)
+        }
+
+        let mut files: Vec<PathBuf> = Vec::new();
+        for entry in std::fs::read_dir(&input).into_iter().flatten().filter_map(|e| e.ok()) {
+            let path = entry.path();
+            if is_txt_file(&path) {
+                files.push(path);
+            } else if path.is_dir() {
+                files.extend(
+                    std::fs::read_dir(&path)
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|e| e.ok())
+                        .map(|e| e.path())
+                        .filter(|p| is_txt_file(p)),
+                );
+            }
+        }
         files.sort();
 
         {
@@ -81,7 +97,7 @@ impl DjiKmzApp {
                     state.current_file = Some(name.clone());
                 }
 
-                match crate::dji::convert_file(&file, &output, &api_key) {
+                match crate::dji::convert_file(&file, &input, &output, &api_key) {
                     Ok(outcome) => {
                         let placemark_name = outcome
                             .output_path
@@ -285,6 +301,80 @@ mod tests {
                 std::io::Read::read_to_string(&mut archive.by_name("doc.kml").unwrap(), &mut kml).unwrap();
                 let placemark_count = kml.matches("<Placemark>").count();
                 assert_eq!(placemark_count, 2, "merged KMZ should contain both flights as separate placemarks");
+
+                break;
+            }
+            assert!(Instant::now() < deadline, "conversion did not finish in time");
+            std::thread::sleep(Duration::from_millis(100));
+        }
+
+        let _ = std::fs::remove_dir_all(&input_dir);
+        let _ = std::fs::remove_dir_all(&output_dir);
+    }
+
+    /// A file placed in a pilot subfolder ({input}/{Pilot}/*.txt) must
+    /// still resolve LOCATION from the top-level selected folder (not the
+    /// pilot subfolder it directly sits in — the exact regression risk
+    /// introduced by making the scan recursive), and the resulting KMZ's
+    /// description must carry the pilot's name.
+    #[test]
+    fn extracts_pilot_from_subfolder_and_keeps_location_from_the_root() {
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/sample.txt");
+        if !fixture.exists() {
+            eprintln!("skipping: tests/fixtures/sample.txt not present");
+            return;
+        }
+
+        let input_dir = std::env::temp_dir().join("dji2kmz_pilot_test_input");
+        let output_dir = std::env::temp_dir().join("dji2kmz_pilot_test_output");
+        let _ = std::fs::remove_dir_all(&input_dir);
+        let _ = std::fs::remove_dir_all(&output_dir);
+        let pilot_dir = input_dir.join("Jane_Doe");
+        std::fs::create_dir_all(&pilot_dir).unwrap();
+        std::fs::create_dir_all(&output_dir).unwrap();
+
+        std::fs::copy(&fixture, pilot_dir.join("sample.txt")).unwrap();
+
+        let app = DjiKmzApp {
+            input_folder: Some(input_dir.clone()),
+            output_folder: Some(output_dir.clone()),
+            ..Default::default()
+        };
+        app.start_conversion();
+
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let snapshot = app.progress.lock().unwrap().clone();
+            if snapshot.done {
+                assert_eq!(snapshot.completed, 1);
+                assert!(snapshot.errors.is_empty(), "errors: {:?}", snapshot.errors.iter().map(|e| &e.message).collect::<Vec<_>>());
+
+                let kmz_files: Vec<_> = std::fs::read_dir(&output_dir)
+                    .unwrap()
+                    .filter_map(|e| e.ok())
+                    .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("kmz"))
+                    .map(|e| e.file_name().to_string_lossy().to_string())
+                    .collect();
+
+                // Location must come from "dji2kmz_pilot_test_input" (the
+                // selected root), NOT "Jane_Doe" (the pilot subfolder).
+                let individual = kmz_files.iter().find(|n| !n.contains("Flight_Logs"))
+                    .unwrap_or_else(|| panic!("expected an individual file among: {kmz_files:?}"));
+                assert!(
+                    individual.contains("dji2kmz_pilot_test_input"),
+                    "location should come from the root folder, not the pilot subfolder: {individual}"
+                );
+                assert!(
+                    !individual.contains("Jane_Doe"),
+                    "pilot subfolder name should not leak into the location naming: {individual}"
+                );
+
+                let kml_bytes = std::fs::read(output_dir.join(individual)).unwrap();
+                let mut archive = zip::ZipArchive::new(std::io::Cursor::new(kml_bytes)).unwrap();
+                let mut kml = String::new();
+                std::io::Read::read_to_string(&mut archive.by_name("doc.kml").unwrap(), &mut kml).unwrap();
+                assert!(kml.contains("Pilot: Jane_Doe"), "description should carry the pilot's name: {kml}");
 
                 break;
             }

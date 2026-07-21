@@ -9,6 +9,7 @@ use dji2kmz_core::dji::{ConvertError, FlightData};
 pub async fn convert_for_merge(
     bytes: Vec<u8>,
     file_stem: &str,
+    pilot: &str,
     api_key: &str,
     proxy_url: &str,
 ) -> Result<(String, FlightData), ConvertError> {
@@ -24,7 +25,7 @@ pub async fn convert_for_merge(
         None => None,
     };
 
-    let flight_data = dji2kmz_core::dji::extract_flight_data(&parser, keychains, file_stem)?;
+    let flight_data = dji2kmz_core::dji::extract_flight_data(&parser, keychains, file_stem, pilot)?;
     let (meta, stats, points) = &flight_data;
     let kml = dji2kmz_core::kml::build_kml(meta, stats, points);
 

@@ -75,8 +75,10 @@ jobs:
           mkdir -p site
           cp web/static/index.html site/
           cp web/pkg/dji2kmz_web.js web/pkg/dji2kmz_web_bg.wasm site/
-          mkdir -p site/viewer
+          mkdir -p site/shared site/viewer site/logbook
+          cp -r web/static/shared/. site/shared/
           cp -r web/static/viewer/. site/viewer/
+          cp -r web/static/logbook/. site/logbook/
 
       - uses: actions/upload-pages-artifact@v3
         with:

@@ -8,6 +8,8 @@
 // In both merged shapes the date immediately before ".kmz" is always a
 // full MM-DD-YYYY, so one regex covers both.
 
+import { readKmlFromKmz, parseKml } from "./kml.js";
+
 const INDIVIDUAL_PREFIX_RE = /^(\d{2})-(\d{2})-(\d{4})_/;
 const MERGED_SUFFIX_RE = /(\d{2})-(\d{2})-(\d{4})\.kmz$/i;
 
@@ -18,7 +20,17 @@ export function isMerged(name) {
   return name.includes("_Flight_Logs_");
 }
 
-function dateKeyFromFilename(name) {
+/**
+ * Sortable "YYYYMMDD" from any name following this project's naming
+ * contract — an individual filename, a merged filename, or (this is why
+ * it's exported) a placemark's `<name>`, which is always the individual
+ * filename format even inside a merged KMZ. This is the LOCAL date
+ * embedded in the original filename, not the UTC date in a KML
+ * description's "Start Time" — the two can differ by a day depending on
+ * timezone, and callers wanting the pilot's actual local flight date
+ * (e.g. the logbook) must use this, not the description.
+ */
+export function dateKeyFromFilename(name) {
   const m = isMerged(name) ? name.match(MERGED_SUFFIX_RE) : name.match(INDIVIDUAL_PREFIX_RE);
   if (!m) return null;
   const [, mm, dd, yyyy] = m;
@@ -69,4 +81,35 @@ export function formatDateKey(dateKey) {
   const mm = dateKey.slice(4, 6);
   const dd = dateKey.slice(6, 8);
   return `${mm}/${dd}/${yyyy}`;
+}
+
+// folderKey -> Promise<placemark[]>. Module-scoped, so each page (viewer,
+// logbook) gets its own fresh cache on load — caching the in-flight
+// promise (not just the resolved value) dedupes a rapid double-load of
+// the same folder before its first read finishes.
+const flightCache = new Map();
+
+/**
+ * Loads every placemark for a location entry (from `buildLocationEntries`)
+ * — its merged KMZ if present (one file, fast), or every individual KMZ
+ * in that folder as a fallback. Shared between the viewer (renders each
+ * placemark's coordinates on the map) and the logbook (reads only the
+ * metadata/name, discards coordinates) so "which files represent this
+ * location's flights" is derived in exactly one place.
+ */
+export function loadPlacemarks(entry) {
+  if (!flightCache.has(entry.folderKey)) {
+    const files = entry.mergedFile ? [entry.mergedFile] : entry.individualFiles;
+    flightCache.set(
+      entry.folderKey,
+      (async () => {
+        const placemarks = [];
+        for (const file of files) {
+          placemarks.push(...parseKml(await readKmlFromKmz(file)));
+        }
+        return placemarks;
+      })(),
+    );
+  }
+  return flightCache.get(entry.folderKey);
 }

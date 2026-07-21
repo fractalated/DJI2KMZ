@@ -68,10 +68,11 @@ fn placemark_block(name: &str, meta: &FlightMeta, stats: &FlightStats, points: &
         .collect::<Vec<_>>()
         .join(" ");
     let raw_description = format!(
-        "Drone Model: {}\nAircraft Serial: {}\nAircraft Name: {}\nBattery Serial: {}\nStart Time: {}\nDuration: {}\nDistance: {:.0} m\nMax Altitude: {:.1} m\nMax Speed: {:.1} m/s",
+        "Drone Model: {}\nAircraft Serial: {}\nAircraft Name: {}\nPilot: {}\nBattery Serial: {}\nStart Time: {}\nDuration: {}\nDistance: {:.0} m\nMax Altitude: {:.1} m\nMax Speed: {:.1} m/s",
         non_empty(&meta.model),
         non_empty(&meta.aircraft_sn),
         non_empty(&meta.aircraft_name),
+        non_empty(&meta.pilot),
         non_empty(&meta.battery_sn),
         meta.start_time.to_rfc3339(),
         format_duration(stats.duration_secs),
@@ -182,6 +183,7 @@ mod tests {
             aircraft_name: "Ninja".into(),
             battery_sn: "BAT123".into(),
             start_time: chrono::Utc.with_ymd_and_hms(2026, 6, 15, 8, 18, 13).unwrap(),
+            pilot: "John Smith".into(),
         };
         let stats = FlightStats {
             duration_secs: 1769.5,
@@ -197,6 +199,7 @@ mod tests {
         assert!(kml.contains("-102.4419,31.5396,10"));
         assert!(kml.contains("Matrice350RTK"));
         assert!(kml.contains("relativeToGround"));
+        assert!(kml.contains("Pilot: John Smith"));
     }
 
     #[test]
@@ -212,6 +215,7 @@ mod tests {
                 aircraft_name: "Lythix | Ninja".into(),
                 battery_sn: "BAT123".into(),
                 start_time: chrono::Utc.with_ymd_and_hms(2026, 6, 15, 8, 18, 13).unwrap(),
+                pilot: "Jane Doe".into(),
             };
             let stats = FlightStats {
                 duration_secs: 60.0,
@@ -247,6 +251,7 @@ mod tests {
             aircraft_name: "".into(),
             battery_sn: "".into(),
             start_time: chrono::Utc::now(),
+            pilot: "".into(),
         };
         let stats = FlightStats {
             duration_secs: 60.0,

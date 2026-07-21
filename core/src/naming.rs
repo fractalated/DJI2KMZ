@@ -102,6 +102,21 @@ pub fn individual_filename(
     (format!("{date}_{time}_{folder}"), date)
 }
 
+/// Given a file's path relative to the selected/location folder (POSIX
+/// "/"-separated — e.g. "John_Smith/DJIFlightRecord_...txt" for a file in
+/// a pilot subfolder, or just "DJIFlightRecord_...txt" for a file placed
+/// directly in the location folder), returns the pilot subfolder name if
+/// the file is nested exactly one level deep, or `None` if it sits
+/// directly in the location folder (no pilot attribution — not an error).
+/// Deeper nesting (rare) still returns just the immediate first-level
+/// folder, ignoring anything past it.
+pub fn extract_pilot_name(relative_path: &str) -> Option<String> {
+    let mut parts = relative_path.split('/');
+    let first = parts.next()?;
+    parts.next()?; // nothing follows `first` => no subfolder, bail via `?`
+    Some(first.to_string())
+}
+
 /// `"{cleaned_folder_name}_Flight_Logs_{date_or_range}"` for the combined
 /// multi-flight KMZ. `dates_mm_dd_yyyy` should be the same `MM-DD-YYYY`
 /// strings produced alongside each flight's individual filename, for
@@ -186,6 +201,27 @@ mod tests {
         // Local time (08-18) from the bracket, NOT the UTC start_time (14-18).
         assert_eq!(name, "06-15-2026_08-18_Midland_Airport");
         assert_eq!(date, "06-15-2026");
+    }
+
+    #[test]
+    fn extract_pilot_name_returns_none_when_file_sits_directly_in_the_location_folder() {
+        assert_eq!(extract_pilot_name("DJIFlightRecord_2026-06-15_[08-18-13].txt"), None);
+    }
+
+    #[test]
+    fn extract_pilot_name_returns_the_subfolder_when_nested_one_level() {
+        assert_eq!(
+            extract_pilot_name("John_Smith/DJIFlightRecord_2026-06-15_[08-18-13].txt"),
+            Some("John_Smith".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_pilot_name_returns_only_the_first_level_when_nested_deeper() {
+        assert_eq!(
+            extract_pilot_name("John_Smith/2026-06-15/DJIFlightRecord_...txt"),
+            Some("John_Smith".to_string())
+        );
     }
 
     #[test]

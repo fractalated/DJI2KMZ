@@ -17,6 +17,7 @@ const FIELD_MAP = {
   "Drone Model": "droneModel",
   "Aircraft Serial": "aircraftSerial",
   "Aircraft Name": "aircraftName",
+  Pilot: "pilot",
   "Battery Serial": "batterySerial",
   "Start Time": "startTime",
   Duration: "duration",

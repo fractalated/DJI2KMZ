@@ -24,10 +24,15 @@ pub struct FlightMeta {
     pub aircraft_name: String,
     pub battery_sn: String,
     pub start_time: DateTime<Utc>,
+    /// Empty string if not provided (matching every other field's
+    /// convention here) — DJI logs never record who was flying, so this
+    /// comes entirely from the caller (a pilot subfolder in the input
+    /// folder structure), not from anything parsed out of `details`.
+    pub pilot: String,
 }
 
 impl FlightMeta {
-    fn from_details(details: &Details, file_stem: &str) -> Self {
+    fn from_details(details: &Details, file_stem: &str, pilot: &str) -> Self {
         let display_name = if details.aircraft_name.trim().is_empty() {
             file_stem.to_string()
         } else {
@@ -40,6 +45,7 @@ impl FlightMeta {
             aircraft_name: details.aircraft_name.clone(),
             battery_sn: details.battery_sn.clone(),
             start_time: details.start_time,
+            pilot: pilot.to_string(),
         }
     }
 }
@@ -142,6 +148,7 @@ pub fn extract_flight_data(
     parser: &DJILog,
     keychains: Option<Vec<Vec<KeychainFeaturePoint>>>,
     file_stem: &str,
+    pilot: &str,
 ) -> Result<FlightData, ConvertError> {
     let frames = parser.frames(keychains).map_err(ConvertError::Parse)?;
 
@@ -164,7 +171,7 @@ pub fn extract_flight_data(
         return Err(ConvertError::NoTrack);
     }
 
-    let meta = FlightMeta::from_details(&parser.details, file_stem);
+    let meta = FlightMeta::from_details(&parser.details, file_stem, pilot);
     let stats = FlightStats::compute(&parser.details, &frames, &points);
 
     Ok((meta, stats, points))
@@ -177,8 +184,9 @@ pub fn finish_conversion(
     parser: &DJILog,
     keychains: Option<Vec<Vec<KeychainFeaturePoint>>>,
     file_stem: &str,
+    pilot: &str,
 ) -> Result<ConversionResult, ConvertError> {
-    let (meta, stats, points) = extract_flight_data(parser, keychains, file_stem)?;
+    let (meta, stats, points) = extract_flight_data(parser, keychains, file_stem, pilot)?;
     let point_count = points.len();
     let kml = crate::kml::build_kml(&meta, &stats, &points);
 

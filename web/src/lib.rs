@@ -126,17 +126,29 @@ impl MergedKmlBuilder {
     /// `bytes` must be owned (not borrowed) — wasm-bindgen disallows
     /// borrowed references as parameters to `async fn` exports, since it
     /// can't prove the borrow outlives the awaited call.
+    ///
+    /// `relative_path` is the file's path *within the selected folder*
+    /// (e.g. `"John_Smith/DJIFlightRecord_....txt"` for a file in a pilot
+    /// subfolder, or just `"DJIFlightRecord_....txt"` for one placed
+    /// directly in the selected folder) — not just the bare filename, so
+    /// pilot attribution can be derived the same way the native app does.
     pub async fn add_and_convert(
         &mut self,
         bytes: Vec<u8>,
-        original_filename: String,
+        relative_path: String,
         api_key: String,
         proxy_url: String,
     ) -> Result<ConvertedFlight, JsValue> {
+        let original_filename = relative_path
+            .rsplit('/')
+            .next()
+            .unwrap_or(&relative_path)
+            .to_string();
         let file_stem = strip_txt_extension(&original_filename).to_string();
+        let pilot = dji2kmz_core::naming::extract_pilot_name(&relative_path).unwrap_or_default();
 
         let (kml, flight_data) =
-            convert::convert_for_merge(bytes, &file_stem, &api_key, &proxy_url)
+            convert::convert_for_merge(bytes, &file_stem, &pilot, &api_key, &proxy_url)
                 .await
                 .map_err(to_js_error)?;
 

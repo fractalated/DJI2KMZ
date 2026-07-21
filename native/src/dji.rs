@@ -60,12 +60,19 @@ fn unique_output_path(output_dir: &Path, base_name: &str) -> PathBuf {
 
 /// Parse one DJI `.txt` flight log and write its flight path to a `.kmz`
 /// file in `output_dir`, named from the flight's local date/time (parsed
-/// from the original filename) and the name of the folder `input_path`
-/// lives in. One bad/corrupt file must never abort a batch run, so parsing
-/// is wrapped in `catch_unwind` — the underlying crate can panic on
-/// truncated/malformed input.
+/// from the original filename) and the name of `input_root` (the
+/// originally selected folder — the "location"). One bad/corrupt file
+/// must never abort a batch run, so parsing is wrapped in `catch_unwind`
+/// — the underlying crate can panic on truncated/malformed input.
+///
+/// `input_root` is deliberately NOT the same as `input_path`'s immediate
+/// parent: `input_path` may sit one level deeper, in a pilot subfolder
+/// (`{input_root}/{Pilot Name}/file.txt`), and the location name must
+/// always come from `input_root` itself, never from whatever folder
+/// happens to directly contain the file.
 pub fn convert_file(
     input_path: &Path,
+    input_root: &Path,
     output_dir: &Path,
     api_key: &str,
 ) -> Result<ConvertOutcome, ConvertError> {
@@ -88,8 +95,15 @@ pub fn convert_file(
         .and_then(|s| s.to_str())
         .unwrap_or("flight");
 
+    let relative = input_path
+        .strip_prefix(input_root)
+        .ok()
+        .map(|p| p.to_string_lossy().replace('\\', "/"))
+        .unwrap_or_default();
+    let pilot = dji2kmz_core::naming::extract_pilot_name(&relative).unwrap_or_default();
+
     let flight_data = match std::panic::catch_unwind(AssertUnwindSafe(|| {
-        dji2kmz_core::dji::extract_flight_data(&parser, keychains, file_stem)
+        dji2kmz_core::dji::extract_flight_data(&parser, keychains, file_stem, &pilot)
     })) {
         Ok(Ok(data)) => data,
         Ok(Err(e)) => return Err(e),
@@ -104,9 +118,8 @@ pub fn convert_file(
         .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or(file_stem);
-    let folder_name = input_path
-        .parent()
-        .and_then(|p| p.file_name())
+    let folder_name = input_root
+        .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or("Flight_Logs");
 
@@ -131,14 +144,16 @@ mod tests {
 
     #[test]
     fn converts_a_real_sample_log() {
-        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sample.txt");
+        let fixtures_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+        let fixture = fixtures_dir.join("sample.txt");
         if !fixture.exists() {
             eprintln!("skipping: tests/fixtures/sample.txt not present");
             return;
         }
         let out_dir = std::env::temp_dir();
         let api_key = crate::config::resolve_api_key();
-        let outcome = convert_file(&fixture, &out_dir, &api_key).expect("conversion should succeed");
+        let outcome = convert_file(&fixture, &fixtures_dir, &out_dir, &api_key)
+            .expect("conversion should succeed");
         assert!(outcome.point_count > 0);
         assert!(outcome.output_path.exists());
         let _ = std::fs::remove_file(&outcome.output_path);

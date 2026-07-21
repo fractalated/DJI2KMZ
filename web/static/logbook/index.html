@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DJI2KMZ — Pilot Logbook</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; }
+    h1 { font-size: 1.3rem; display: flex; align-items: center; gap: 0.5rem; }
+    h1 svg { flex: none; }
+    p.hint { color: #666; font-size: 0.9em; margin-top: -0.5rem; }
+    button { padding: 0.5rem 1rem; cursor: pointer; }
+    #connectRow { margin-bottom: 1.5rem; }
+    #pilotList { border-top: 1px solid #ddd; }
+    .pilot-row { display: flex; justify-content: space-between; align-items: center; padding: 0.6rem 0; border-bottom: 1px solid #eee; }
+    .pilot-row button { background: none; border: none; text-align: left; font: inherit; font-weight: 600; cursor: pointer; padding: 0; }
+    .pilot-row button:hover { color: #0080ff; }
+    .pilot-summary { color: #666; font-size: 0.9em; }
+    #logbookView { display: none; }
+    #logbookView h2 { margin-bottom: 0.25rem; }
+    .back-link { background: none; border: none; color: #0080ff; cursor: pointer; padding: 0; font: inherit; margin-bottom: 1rem; }
+    .totals { color: #666; margin: 0.5rem 0 1rem; }
+    .type-breakdown { font-size: 0.9em; color: #666; margin-bottom: 1.5rem; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { text-align: left; padding: 0.4rem 0.6rem; border-bottom: 1px solid #eee; font-size: 0.95em; }
+    th { border-bottom: 2px solid #ccc; }
+  </style>
+</head>
+<body>
+  <h1>
+    <svg width="28" height="28" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <line x1="50" y1="50" x2="20" y2="20" stroke="#0080ff" stroke-width="4"/>
+      <line x1="50" y1="50" x2="80" y2="20" stroke="#0080ff" stroke-width="4"/>
+      <line x1="50" y1="50" x2="20" y2="80" stroke="#0080ff" stroke-width="4"/>
+      <line x1="50" y1="50" x2="80" y2="80" stroke="#0080ff" stroke-width="4"/>
+      <circle cx="20" cy="20" r="10" stroke="#0080ff" stroke-width="4"/>
+      <circle cx="80" cy="20" r="10" stroke="#0080ff" stroke-width="4"/>
+      <circle cx="20" cy="80" r="10" stroke="#0080ff" stroke-width="4"/>
+      <circle cx="80" cy="80" r="10" stroke="#0080ff" stroke-width="4"/>
+      <rect x="42" y="42" width="16" height="16" rx="3" fill="#0080ff"/>
+    </svg>
+    DJI2KMZ — Pilot Logbook
+  </h1>
+  <p class="hint">
+    Read-only. Reads .kmz files directly from a folder you choose — nothing
+    is ever uploaded anywhere. Attributed by pilot subfolder
+    (<code>Location/Pilot Name/*.txt</code>) at conversion time — flights
+    without one are grouped under "Unknown Pilot."
+  </p>
+
+  <div id="connectRow"></div>
+  <div id="pilotList"></div>
+
+  <div id="logbookView">
+    <button class="back-link" id="backBtn">&larr; Back to pilots</button>
+    <h2 id="pilotName"></h2>
+    <div class="totals" id="pilotTotals"></div>
+    <div class="type-breakdown" id="typeBreakdown"></div>
+    <table>
+      <thead>
+        <tr><th>Date</th><th>Aircraft</th><th>Location</th><th>Duration</th></tr>
+      </thead>
+      <tbody id="flightRows"></tbody>
+    </table>
+  </div>
+
+  <script src="https://unpkg.com/jszip@3.10.1/dist/jszip.min.js"></script>
+  <script type="module" src="./logbook.js"></script>
+</body>
+</html>
