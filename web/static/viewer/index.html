@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DJI2KMZ — Flight Log Viewer</title>
+  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.css">
+  <style>
+    html, body { height: 100%; margin: 0; }
+    body { font-family: system-ui, sans-serif; display: flex; }
+    #sidebar { width: 320px; flex: none; overflow-y: auto; padding: 1rem; box-sizing: border-box; border-right: 1px solid #ddd; }
+    #sidebar h1 { font-size: 1.1rem; margin: 0 0 0.75rem; }
+    #map { flex: 1 1 auto; position: relative; }
+    button { padding: 0.5rem 1rem; cursor: pointer; }
+    .location-entry { margin-bottom: 0.25rem; }
+    .location-entry button { width: 100%; text-align: left; background: none; border: none; padding: 0.4rem 0; cursor: pointer; font: inherit; }
+    .location-entry button:hover { color: #0080ff; }
+    .flight-checklist { padding-left: 1rem; margin: 0.25rem 0 0.75rem; }
+    .flight-checklist label { display: flex; align-items: flex-start; gap: 0.4rem; font-size: 0.9em; padding: 0.15rem 0; cursor: pointer; }
+    #connectRow { margin-bottom: 1rem; }
+  </style>
+</head>
+<body>
+  <div id="sidebar">
+    <h1>DJI2KMZ — Viewer</h1>
+    <p style="color:#666; font-size:0.85em; margin-top:-0.5rem;">
+      Read-only. Reads .kmz files directly from a folder you choose —
+      nothing is ever uploaded anywhere.
+    </p>
+    <div id="connectRow"></div>
+    <div id="locationList"></div>
+  </div>
+  <div id="map"></div>
+
+  <script src="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.js"></script>
+  <script src="https://unpkg.com/jszip@3.10.1/dist/jszip.min.js"></script>
+  <script type="module" src="./viewer.js"></script>
+</body>
+</html>
