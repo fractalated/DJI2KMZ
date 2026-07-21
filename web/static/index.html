@@ -6,17 +6,34 @@
   <title>DJI2KMZ — Web</title>
   <style>
     body { font-family: system-ui, sans-serif; max-width: 640px; margin: 2rem auto; padding: 0 1rem; }
+    h1 { display: flex; align-items: center; gap: 0.6rem; }
+    h1 svg { flex: none; width: 2rem; height: 2rem; color: #0080ff; }
     label { display: block; margin: 0.75rem 0 0.25rem; font-weight: 600; }
     input[type="text"] { width: 100%; box-sizing: border-box; padding: 0.4rem; }
     button { margin-top: 0.75rem; padding: 0.5rem 1rem; cursor: pointer; }
     button:disabled { cursor: not-allowed; opacity: 0.5; }
+    #folderRow { display: flex; align-items: center; gap: 0.75rem; }
+    #folderLabel { color: #666; }
     #progress { margin-top: 1rem; font-weight: 600; }
     #errors { color: #b00020; }
     #errors:empty { display: none; }
   </style>
 </head>
 <body>
-  <h1>DJI2KMZ — Web</h1>
+  <h1>
+    <svg viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <line x1="50" y1="50" x2="20" y2="20" stroke="currentColor" stroke-width="6" stroke-linecap="round"/>
+      <line x1="50" y1="50" x2="80" y2="20" stroke="currentColor" stroke-width="6" stroke-linecap="round"/>
+      <line x1="50" y1="50" x2="20" y2="80" stroke="currentColor" stroke-width="6" stroke-linecap="round"/>
+      <line x1="50" y1="50" x2="80" y2="80" stroke="currentColor" stroke-width="6" stroke-linecap="round"/>
+      <circle cx="20" cy="20" r="12" stroke="currentColor" stroke-width="6"/>
+      <circle cx="80" cy="20" r="12" stroke="currentColor" stroke-width="6"/>
+      <circle cx="20" cy="80" r="12" stroke="currentColor" stroke-width="6"/>
+      <circle cx="80" cy="80" r="12" stroke="currentColor" stroke-width="6"/>
+      <rect x="40" y="40" width="20" height="20" rx="4" fill="currentColor"/>
+    </svg>
+    DJI2KMZ — Web
+  </h1>
   <p>Batch-convert DJI flight logs (.txt) into flight-path KMZ files, right
      in your browser — nothing is uploaded anywhere except a small
      decryption-key lookup DJI requires for newer (encrypted) logs.</p>
@@ -25,7 +42,11 @@
   <input id="apiKey" type="text">
 
   <label for="fileInput">Folder containing DJI .txt logs</label>
-  <input id="fileInput" type="file" webkitdirectory>
+  <div id="folderRow">
+    <button type="button" id="chooseFolderBtn">Choose Folder</button>
+    <span id="folderLabel">No folder chosen</span>
+  </div>
+  <input id="fileInput" type="file" webkitdirectory style="display:none">
   <p style="color:#666; font-size:0.9em; margin-top:0.25rem;">
     Everything else in the folder (photos, videos, other file types) is
     ignored — only <code>.txt</code> files are converted.
@@ -45,6 +66,8 @@
 
     const apiKeyEl = document.getElementById("apiKey");
     const fileInput = document.getElementById("fileInput");
+    const chooseFolderBtn = document.getElementById("chooseFolderBtn");
+    const folderLabel = document.getElementById("folderLabel");
     const convertBtn = document.getElementById("convertBtn");
     const progressEl = document.getElementById("progress");
     const errorsEl = document.getElementById("errors");
@@ -55,8 +78,23 @@
       apiKeyEl.value = default_api_key();
     });
 
+    // The native <input webkitdirectory> is hidden — its own button/label
+    // text is a browser default ("Choose File" / "No file chosen") that
+    // doesn't update for folder selection, so it's driven from this
+    // custom button instead.
+    chooseFolderBtn.addEventListener("click", () => fileInput.click());
+
     fileInput.addEventListener("change", () => {
       convertBtn.disabled = fileInput.files.length === 0;
+      if (fileInput.files.length === 0) {
+        folderLabel.textContent = "No folder chosen";
+        return;
+      }
+      const folderName = fileInput.files[0].webkitRelativePath.split("/")[0];
+      const txtCount = Array.from(fileInput.files).filter((f) =>
+        f.name.toLowerCase().endsWith(".txt")
+      ).length;
+      folderLabel.textContent = `${folderName} (${txtCount} .txt file${txtCount === 1 ? "" : "s"})`;
     });
 
     convertBtn.addEventListener("click", async () => {
