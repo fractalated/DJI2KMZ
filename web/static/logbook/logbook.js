@@ -140,8 +140,25 @@ backBtn.addEventListener("click", () => {
   pilotListEl.style.display = "";
 });
 
+function renderConnected(handle) {
+  connectRow.innerHTML = `Connected: <strong>${handle.name}</strong> `;
+  const btn = document.createElement("button");
+  btn.textContent = "Change Folder";
+  btn.addEventListener("click", async () => {
+    try {
+      const newHandle = await pickDirectory();
+      await loadFromHandle(newHandle);
+    } catch (err) {
+      if (err.name !== "AbortError") {
+        connectRow.textContent = `Error: ${err.message ?? err}`;
+      }
+    }
+  });
+  connectRow.appendChild(btn);
+}
+
 async function loadFromHandle(handle) {
-  connectRow.innerHTML = `Connected: <strong>${handle.name}</strong>`;
+  renderConnected(handle);
   pilotListEl.textContent = "Scanning folder…";
   const entries = await collectKmzFiles(handle);
   const locations = buildLocationEntries(entries);
