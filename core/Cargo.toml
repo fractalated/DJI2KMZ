@@ -8,3 +8,5 @@ dji-log-parser.workspace = true
 chrono.workspace = true
 thiserror.workspace = true
 zip.workspace = true
+rust_xlsxwriter.workspace = true
+calamine.workspace = true

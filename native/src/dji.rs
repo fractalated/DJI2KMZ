@@ -8,16 +8,26 @@ use dji_log_parser::DJILog;
 pub use dji2kmz_core::dji::ConvertError;
 use dji2kmz_core::dji::FlightData;
 
-pub struct ConvertOutcome {
-    pub output_path: PathBuf,
-    pub point_count: usize,
-    /// This flight's raw parsed data, so the caller can accumulate it
-    /// across a batch for the merged multi-flight KMZ.
-    pub flight_data: FlightData,
-    /// The `MM-DD-YYYY` local date used in `output_path`'s filename, so the
-    /// caller can compute the merged KMZ's date range without re-deriving
-    /// it from the original filename.
+/// One flight's parsed/converted result, before it's written to disk — the
+/// caller decides the final destination directory (which depends on this
+/// flight's own `local_date`, not known until after parsing), so writing
+/// is a separate step from `parse_and_convert`.
+pub struct ConvertedFlight {
+    /// Filename (no extension, no collision-dedup suffix yet) — same
+    /// format the web build uses.
+    pub base_name: String,
+    /// `MM-DD-YYYY`, the local date embedded in the original filename
+    /// (falling back to the parsed UTC start time) — used both for the
+    /// destination date-folder and the pilot log's Date column.
     pub local_date: String,
+    /// "HH:MM" local takeoff/landing, for the pilot log.
+    pub takeoff: String,
+    pub landing: String,
+    pub kml: String,
+    /// This flight's raw parsed data, so the caller can accumulate it
+    /// across a batch for a per-date merged KMZ and pilot log rows.
+    pub flight_data: FlightData,
+    pub point_count: usize,
 }
 
 /// Fetch the decryption keychain for a v13+ log. Tries the standard
@@ -58,24 +68,24 @@ fn unique_output_path(output_dir: &Path, base_name: &str) -> PathBuf {
     }
 }
 
-/// Parse one DJI `.txt` flight log and write its flight path to a `.kmz`
-/// file in `output_dir`, named from the flight's local date/time (parsed
-/// from the original filename) and the name of `input_root` (the
-/// originally selected folder — the "location"). One bad/corrupt file
-/// must never abort a batch run, so parsing is wrapped in `catch_unwind`
-/// — the underlying crate can panic on truncated/malformed input.
+/// Parse one DJI `.txt` flight log and build its flight-path KML, named
+/// from the flight's local date/time (parsed from the original filename)
+/// and the name of `input_root` (the originally selected folder — the
+/// "location"/project). Does not write anything to disk — see
+/// `write_kmz_file`. One bad/corrupt file must never abort a batch run, so
+/// parsing is wrapped in `catch_unwind` — the underlying crate can panic
+/// on truncated/malformed input.
 ///
 /// `input_root` is deliberately NOT the same as `input_path`'s immediate
 /// parent: `input_path` may sit one level deeper, in a pilot subfolder
 /// (`{input_root}/{Pilot Name}/file.txt`), and the location name must
 /// always come from `input_root` itself, never from whatever folder
 /// happens to directly contain the file.
-pub fn convert_file(
+pub fn parse_and_convert(
     input_path: &Path,
     input_root: &Path,
-    output_dir: &Path,
     api_key: &str,
-) -> Result<ConvertOutcome, ConvertError> {
+) -> Result<ConvertedFlight, ConvertError> {
     let bytes = std::fs::read(input_path)?;
 
     let parser = match std::panic::catch_unwind(move || dji2kmz_core::dji::parse_bytes(bytes)) {
@@ -125,17 +135,27 @@ pub fn convert_file(
 
     let (base_name, local_date) =
         dji2kmz_core::naming::individual_filename(original_filename, meta.start_time, folder_name);
-    let output_path = unique_output_path(output_dir, &base_name);
+    let times = dji2kmz_core::naming::pilot_log_times(original_filename, meta.start_time, stats.duration_secs);
 
-    let file = std::fs::File::create(&output_path)?;
-    dji2kmz_core::kml::write_kmz(file, &kml).map_err(ConvertError::Kmz)?;
-
-    Ok(ConvertOutcome {
-        output_path,
-        point_count,
-        flight_data,
+    Ok(ConvertedFlight {
+        base_name,
         local_date,
+        takeoff: times.takeoff,
+        landing: times.landing,
+        kml,
+        flight_data,
+        point_count,
     })
+}
+
+/// Writes `kml` to `{output_dir}/{base_name}.kmz`, creating `output_dir`
+/// if needed and deduping against a same-named file already there.
+pub fn write_kmz_file(output_dir: &Path, base_name: &str, kml: &str) -> Result<PathBuf, ConvertError> {
+    std::fs::create_dir_all(output_dir)?;
+    let output_path = unique_output_path(output_dir, base_name);
+    let file = std::fs::File::create(&output_path)?;
+    dji2kmz_core::kml::write_kmz(file, kml).map_err(ConvertError::Kmz)?;
+    Ok(output_path)
 }
 
 #[cfg(test)]
@@ -150,12 +170,15 @@ mod tests {
             eprintln!("skipping: tests/fixtures/sample.txt not present");
             return;
         }
-        let out_dir = std::env::temp_dir();
         let api_key = crate::config::resolve_api_key();
-        let outcome = convert_file(&fixture, &fixtures_dir, &out_dir, &api_key)
+        let converted = parse_and_convert(&fixture, &fixtures_dir, &api_key)
             .expect("conversion should succeed");
-        assert!(outcome.point_count > 0);
-        assert!(outcome.output_path.exists());
-        let _ = std::fs::remove_file(&outcome.output_path);
+        assert!(converted.point_count > 0);
+
+        let out_dir = std::env::temp_dir().join("dji2kmz_dji_test_output");
+        let output_path = write_kmz_file(&out_dir, &converted.base_name, &converted.kml)
+            .expect("write should succeed");
+        assert!(output_path.exists());
+        let _ = std::fs::remove_dir_all(&out_dir);
     }
 }

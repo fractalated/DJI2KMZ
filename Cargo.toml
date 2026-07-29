@@ -11,6 +11,8 @@ dji-log-parser = "0.5.7"
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
 thiserror = "2.0.19"
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
+rust_xlsxwriter = "0.96.0"
+calamine = "0.36.1"
 
 [profile.release]
 lto = true

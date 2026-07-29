@@ -1,4 +1,4 @@
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, NaiveTime, Utc};
 
 /// Words stripped (whole-word, case-insensitive) from a folder name before
 /// it's used in an output filename/title — e.g. "Midland Airport Flight
@@ -64,22 +64,93 @@ fn is_two_digit(s: &str) -> bool {
     s.len() == 2 && s.bytes().all(|b| b.is_ascii_digit())
 }
 
-/// Strips filler words from a folder name and joins what's left with
-/// underscores (Windows filenames can't contain spaces safely across every
-/// tool, and this keeps the whole output filename consistently
-/// space-free). Falls back to the original (uncleaned) name if stripping
-/// filler words would remove everything.
-pub fn clean_folder_name(folder_name: &str) -> String {
+/// Splits a folder name into words with filler words removed. Falls back
+/// to every word (uncleaned) if stripping filler words would remove
+/// everything — a folder literally named "Flight Logs" should still
+/// produce something, not an empty name.
+fn strip_filler_words(folder_name: &str) -> Vec<&str> {
     let cleaned: Vec<&str> = folder_name
         .split_whitespace()
         .filter(|word| !FILLER_WORDS.contains(&word.to_lowercase().as_str()))
         .collect();
 
     if cleaned.is_empty() {
-        folder_name.split_whitespace().collect::<Vec<_>>().join("_")
+        folder_name.split_whitespace().collect()
     } else {
-        cleaned.join("_")
+        cleaned
     }
+}
+
+/// Strips filler words from a folder name and joins what's left with
+/// underscores (Windows filenames can't contain spaces safely across every
+/// tool, and this keeps the whole output filename consistently
+/// space-free). Used for individual/merged `.kmz` *filenames*.
+pub fn clean_folder_name(folder_name: &str) -> String {
+    strip_filler_words(folder_name).join("_")
+}
+
+/// Same filler-word stripping as `clean_folder_name`, but joined with
+/// spaces instead of underscores — for use as an actual destination
+/// *folder* name (e.g. `KMZs/{project_name}/`), where spaces are fine and
+/// underscores would just look wrong next to a human-typed project name.
+pub fn clean_project_name(folder_name: &str) -> String {
+    strip_filler_words(folder_name).join(" ")
+}
+
+/// `"MM-DD-YYYY"` -> `"YYYY-MM-DD"`, a sortable per-day destination
+/// subfolder name. Falls back to the input unchanged if it isn't shaped
+/// like `MM-DD-YYYY` (shouldn't happen given callers always pass a string
+/// produced by `individual_filename` or `pilot_log_times`).
+pub fn date_folder_name(mm_dd_yyyy: &str) -> String {
+    match mm_dd_yyyy.split('-').collect::<Vec<_>>().as_slice() {
+        [mm, dd, yyyy] => format!("{yyyy}-{mm}-{dd}"),
+        _ => mm_dd_yyyy.to_string(),
+    }
+}
+
+/// One flight's local takeoff/landing times and date, for the pilot log
+/// spreadsheet.
+pub struct PilotLogTimes {
+    pub date_mm_dd_yyyy: String,
+    /// "HH:MM"
+    pub takeoff: String,
+    /// "HH:MM" — takeoff + duration. Wraps past midnight for the rare
+    /// overnight flight (`NaiveTime` addition wraps modulo 24h rather than
+    /// panicking) — an accepted display-only edge case.
+    pub landing: String,
+}
+
+/// Derives the pilot log's date/takeoff/landing from the same local
+/// date/time `individual_filename` already extracts from the original
+/// filename (falling back to the parsed UTC `start_time` for a filename
+/// that doesn't match DJI's usual shape), so the spreadsheet's date always
+/// agrees with the destination date-folder a flight was written into.
+pub fn pilot_log_times(
+    original_filename: &str,
+    start_time_utc: DateTime<Utc>,
+    duration_secs: f64,
+) -> PilotLogTimes {
+    let (date_mm_dd_yyyy, takeoff) = extract_local_date_time(original_filename)
+        .map(|(date, hh_mm)| (date, hh_mm.replace('-', ":")))
+        .unwrap_or_else(|| {
+            (
+                start_time_utc.format("%m-%d-%Y").to_string(),
+                start_time_utc.format("%H:%M").to_string(),
+            )
+        });
+
+    let landing = takeoff
+        .split_once(':')
+        .and_then(|(h, m)| Some((h.parse::<u32>().ok()?, m.parse::<u32>().ok()?)))
+        .and_then(|(h, m)| NaiveTime::from_hms_opt(h, m, 0))
+        .map(|takeoff_time| {
+            (takeoff_time + Duration::seconds(duration_secs.round() as i64))
+                .format("%H:%M")
+                .to_string()
+        })
+        .unwrap_or_else(|| takeoff.clone());
+
+    PilotLogTimes { date_mm_dd_yyyy, takeoff, landing }
 }
 
 /// Returns `("{MM-DD-YYYY}_{HH-MM}_{cleaned_folder_name}", "MM-DD-YYYY")`
@@ -115,42 +186,6 @@ pub fn extract_pilot_name(relative_path: &str) -> Option<String> {
     let first = parts.next()?;
     parts.next()?; // nothing follows `first` => no subfolder, bail via `?`
     Some(first.to_string())
-}
-
-/// `"{cleaned_folder_name}_Flight_Logs_{date_or_range}"` for the combined
-/// multi-flight KMZ. `dates_mm_dd_yyyy` should be the same `MM-DD-YYYY`
-/// strings produced alongside each flight's individual filename, for
-/// consistency between the two.
-pub fn merged_title(folder_name: &str, dates_mm_dd_yyyy: &[String]) -> String {
-    let folder = clean_folder_name(folder_name);
-    let date_part = date_range_label(dates_mm_dd_yyyy);
-    format!("{folder}_Flight_Logs_{date_part}")
-}
-
-/// Single date if every flight falls on the same day, else
-/// `"{MM}-{DD}--{MM}-{DD}-{YYYY}"` spanning the earliest to latest date.
-fn date_range_label(dates_mm_dd_yyyy: &[String]) -> String {
-    let mut sortable: Vec<(String, &str)> = dates_mm_dd_yyyy
-        .iter()
-        .filter_map(|d| {
-            let parts: Vec<&str> = d.split('-').collect();
-            if parts.len() != 3 {
-                return None;
-            }
-            // "YYYYMMDD" sort key from an "MM-DD-YYYY" display string.
-            Some((format!("{}{}{}", parts[2], parts[0], parts[1]), d.as_str()))
-        })
-        .collect();
-    sortable.sort();
-
-    match (sortable.first(), sortable.last()) {
-        (Some((_, first)), Some((_, last))) if first == last => first.to_string(),
-        (Some((_, first)), Some((_, last))) => {
-            let first_month_day = &first[..5]; // "MM-DD"
-            format!("{first_month_day}--{last}")
-        }
-        _ => "Unknown_Date".to_string(),
-    }
 }
 
 #[cfg(test)]
@@ -225,24 +260,46 @@ mod tests {
     }
 
     #[test]
-    fn builds_merged_title_for_a_single_day() {
-        let dates = vec!["06-15-2026".to_string(), "06-15-2026".to_string()];
-        assert_eq!(
-            merged_title("Midland Airport Flight Logs", &dates),
-            "Midland_Airport_Flight_Logs_06-15-2026"
-        );
+    fn cleans_project_name_with_spaces_not_underscores() {
+        assert_eq!(clean_project_name("East Waddell Ranch Flight Logs"), "East Waddell Ranch");
+        assert_eq!(clean_project_name("Flight Logs"), "Flight Logs");
     }
 
     #[test]
-    fn builds_merged_title_for_a_multi_day_range() {
-        let dates = vec![
-            "06-18-2026".to_string(),
-            "06-15-2026".to_string(),
-            "06-16-2026".to_string(),
-        ];
-        assert_eq!(
-            merged_title("Midland Airport Flight Logs", &dates),
-            "Midland_Airport_Flight_Logs_06-15--06-18-2026"
-        );
+    fn converts_mm_dd_yyyy_to_a_sortable_date_folder_name() {
+        assert_eq!(date_folder_name("06-15-2026"), "2026-06-15");
+    }
+
+    #[test]
+    fn falls_back_to_input_for_an_unrecognized_date_folder_name() {
+        assert_eq!(date_folder_name("20260615"), "20260615");
+    }
+
+    #[test]
+    fn pilot_log_times_from_a_real_dji_filename() {
+        let utc_time = chrono::Utc.with_ymd_and_hms(2026, 6, 15, 14, 18, 13).unwrap();
+        // 90 minutes: 08:18 takeoff -> 09:48 landing.
+        let times = pilot_log_times("DJIFlightRecord_2026-06-15_[08-18-13].txt", utc_time, 5400.0);
+        assert_eq!(times.date_mm_dd_yyyy, "06-15-2026");
+        assert_eq!(times.takeoff, "08:18");
+        assert_eq!(times.landing, "09:48");
+    }
+
+    #[test]
+    fn pilot_log_times_falls_back_to_utc_start_time_for_an_unrecognized_filename() {
+        let utc_time = chrono::Utc.with_ymd_and_hms(2026, 6, 15, 14, 18, 13).unwrap();
+        let times = pilot_log_times("renamed_export.txt", utc_time, 600.0);
+        assert_eq!(times.date_mm_dd_yyyy, "06-15-2026");
+        assert_eq!(times.takeoff, "14:18");
+        assert_eq!(times.landing, "14:28");
+    }
+
+    #[test]
+    fn pilot_log_times_wraps_landing_time_past_midnight() {
+        let utc_time = chrono::Utc.with_ymd_and_hms(2026, 6, 15, 14, 18, 13).unwrap();
+        // 23:50 takeoff + 20 minutes -> wraps to 00:10.
+        let times = pilot_log_times("DJIFlightRecord_2026-06-15_[23-50-00].txt", utc_time, 1200.0);
+        assert_eq!(times.takeoff, "23:50");
+        assert_eq!(times.landing, "00:10");
     }
 }

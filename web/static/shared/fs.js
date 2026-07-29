@@ -17,31 +17,39 @@ function openDb() {
   });
 }
 
-async function saveDirHandle(handle) {
+async function saveDirHandle(handle, key) {
   const db = await openDb();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_NAME, "readwrite");
-    tx.objectStore(STORE_NAME).put(handle, HANDLE_KEY);
+    tx.objectStore(STORE_NAME).put(handle, key);
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });
 }
 
-async function loadDirHandle() {
+async function loadDirHandle(key) {
   const db = await openDb();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_NAME, "readonly");
-    const req = tx.objectStore(STORE_NAME).get(HANDLE_KEY);
+    const req = tx.objectStore(STORE_NAME).get(key);
     req.onsuccess = () => resolve(req.result ?? null);
     req.onerror = () => reject(req.error);
   });
 }
 
-/** Must be called from a click handler — the picker enforces this. */
-export async function pickDirectory() {
-  const handle = await window.showDirectoryPicker({ mode: "read" });
+/**
+ * Must be called from a click handler — the picker enforces this.
+ * `mode` is "read" (viewer/logbook, browsing already-converted files) or
+ * "readwrite" (the import page, writing KMZs/pilot log directly into a
+ * destination folder). `key` distinguishes which remembered handle this
+ * is — the import page's destination folder is a different folder than
+ * the viewer's, so they're persisted under different keys even though
+ * both live in this same IndexedDB store.
+ */
+export async function pickDirectory(mode = "read", key = HANDLE_KEY) {
+  const handle = await window.showDirectoryPicker({ mode });
   try {
-    await saveDirHandle(handle);
+    await saveDirHandle(handle, key);
   } catch (err) {
     // Persistence is a convenience, not a requirement — losing it (e.g.
     // private browsing, storage disabled) shouldn't block using the
@@ -58,16 +66,16 @@ export async function pickDirectory() {
  * and call requestPermission() from ITS click handler (queryPermission is
  * gesture-free, but requestPermission is not).
  */
-export async function restoreDirectory() {
-  const handle = await loadDirHandle();
+export async function restoreDirectory(mode = "read", key = HANDLE_KEY) {
+  const handle = await loadDirHandle(key);
   if (!handle) return null;
-  const granted = (await handle.queryPermission({ mode: "read" })) === "granted";
+  const granted = (await handle.queryPermission({ mode })) === "granted";
   return { handle, granted };
 }
 
 /** Call from a user-gesture handler (e.g. a "Reconnect" button's click). */
-export async function requestPermission(handle) {
-  return (await handle.requestPermission({ mode: "read" })) === "granted";
+export async function requestPermission(handle, mode = "read") {
+  return (await handle.requestPermission({ mode })) === "granted";
 }
 
 /**

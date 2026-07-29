@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+use dji2kmz_core::pilotlog::PilotLogRow;
+
 use crate::progress::{ProgressError, ProgressState, SharedProgress};
 
 pub struct DjiKmzApp {
@@ -77,14 +79,14 @@ impl DjiKmzApp {
         }
 
         std::thread::spawn(move || {
-            let mut flights = Vec::new();
-            let mut dates = Vec::new();
-            // Same name as the individual .kmz file (minus extension, but
-            // including any " (2)" collision-dedup suffix), so a flight's
-            // layer in the merged KMZ is identifiable as the same flight —
-            // meta.display_name alone is often identical across every
-            // flight from the same aircraft.
-            let mut names = Vec::new();
+            let folder_name_raw = input
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("Flight_Logs")
+                .to_string();
+            let project_name = dji2kmz_core::naming::clean_project_name(&folder_name_raw);
+            let kmzs_root = output.join("KMZs").join(&project_name);
+            let mut pilot_rows: Vec<PilotLogRow> = Vec::new();
 
             for file in files {
                 let name = file
@@ -97,17 +99,35 @@ impl DjiKmzApp {
                     state.current_file = Some(name.clone());
                 }
 
-                match crate::dji::convert_file(&file, &input, &output, &api_key) {
-                    Ok(outcome) => {
-                        let placemark_name = outcome
-                            .output_path
-                            .file_stem()
-                            .and_then(|s| s.to_str())
-                            .unwrap_or("Flight")
-                            .to_string();
-                        names.push(placemark_name);
-                        dates.push(outcome.local_date);
-                        flights.push(outcome.flight_data);
+                match crate::dji::parse_and_convert(&file, &input, &api_key) {
+                    Ok(converted) => {
+                        let date_folder = dji2kmz_core::naming::date_folder_name(&converted.local_date);
+                        let dest_dir = kmzs_root.join(&date_folder);
+
+                        match crate::dji::write_kmz_file(&dest_dir, &converted.base_name, &converted.kml) {
+                            Ok(_) => {
+                                let (pilot, aircraft, duration_secs) = {
+                                    let (meta, stats, _) = &converted.flight_data;
+                                    (meta.pilot.clone(), meta.model.clone(), stats.duration_secs)
+                                };
+                                pilot_rows.push(PilotLogRow {
+                                    pilot,
+                                    date_mm_dd_yyyy: converted.local_date.clone(),
+                                    takeoff: converted.takeoff.clone(),
+                                    landing: converted.landing.clone(),
+                                    duration_secs,
+                                    aircraft,
+                                });
+                            }
+                            Err(e) => {
+                                if let Ok(mut state) = progress.lock() {
+                                    state.errors.push(ProgressError {
+                                        file: name.clone(),
+                                        message: e.to_string(),
+                                    });
+                                }
+                            }
+                        }
                     }
                     Err(e) => {
                         if let Ok(mut state) = progress.lock() {
@@ -124,24 +144,24 @@ impl DjiKmzApp {
                 }
             }
 
-            // Merged multi-flight KMZ, produced alongside the individual
-            // per-flight files (not instead of them) whenever at least one
-            // flight converted successfully.
-            if !flights.is_empty() {
-                let folder_name = input
-                    .file_name()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("Flight_Logs");
-                let title = dji2kmz_core::naming::merged_title(folder_name, &dates);
-                let merged_kml = dji2kmz_core::kml::build_merged_kml(&title, &names, &flights);
-                let merged_path = output.join(&title).with_extension("kmz");
-                match std::fs::File::create(&merged_path) {
-                    Ok(file) => {
-                        if let Err(e) = dji2kmz_core::kml::write_kmz(file, &merged_kml) {
+            // Persistent pilot log: append this run's rows to whatever's
+            // already at {output}/Pilot Logs/Flight Log.xlsx (if anything),
+            // so a workbook builds up across every import run rather than
+            // only ever reflecting the most recent one.
+            if !pilot_rows.is_empty() {
+                let pilot_log_dir = output.join("Pilot Logs");
+                let pilot_log_path = pilot_log_dir.join("Flight Log.xlsx");
+                let existing = std::fs::read(&pilot_log_path).ok();
+
+                match dji2kmz_core::pilotlog::update_pilot_log(existing.as_deref(), &pilot_rows) {
+                    Ok(bytes) => {
+                        if let Err(e) = std::fs::create_dir_all(&pilot_log_dir)
+                            .and_then(|_| std::fs::write(&pilot_log_path, bytes))
+                        {
                             if let Ok(mut state) = progress.lock() {
                                 state.errors.push(ProgressError {
-                                    file: title.clone(),
-                                    message: format!("Failed to write merged KMZ: {e}"),
+                                    file: "Pilot Log".to_string(),
+                                    message: format!("Failed to write Flight Log.xlsx: {e}"),
                                 });
                             }
                         }
@@ -149,8 +169,8 @@ impl DjiKmzApp {
                     Err(e) => {
                         if let Ok(mut state) = progress.lock() {
                             state.errors.push(ProgressError {
-                                file: title.clone(),
-                                message: format!("Failed to create merged KMZ: {e}"),
+                                file: "Pilot Log".to_string(),
+                                message: format!("Failed to update pilot log: {e}"),
                             });
                         }
                     }
@@ -169,7 +189,38 @@ impl DjiKmzApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
     use std::time::{Duration, Instant};
+
+    /// Recursively collects every `.kmz` file under `dir` — output now
+    /// lives nested under `KMZs/{project}/{date}/`, not flat.
+    fn find_kmz_files(dir: &Path) -> Vec<PathBuf> {
+        let mut found = Vec::new();
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return found;
+        };
+        for entry in entries.filter_map(|e| e.ok()) {
+            let path = entry.path();
+            if path.is_dir() {
+                found.extend(find_kmz_files(&path));
+            } else if path.extension().and_then(|x| x.to_str()) == Some("kmz") {
+                found.push(path);
+            }
+        }
+        found
+    }
+
+    fn wait_until_done(app: &DjiKmzApp) -> ProgressState {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let snapshot = app.progress.lock().unwrap().clone();
+            if snapshot.done {
+                return snapshot;
+            }
+            assert!(Instant::now() < deadline, "conversion did not finish in time");
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
 
     /// Exercises the real batch-conversion path (folder listing, background
     /// thread, shared progress state) without needing an actual window —
@@ -202,32 +253,21 @@ mod tests {
         };
         app.start_conversion();
 
-        let deadline = Instant::now() + Duration::from_secs(30);
-        loop {
-            let snapshot = app.progress.lock().unwrap().clone();
-            if snapshot.done {
-                assert_eq!(snapshot.total, 1, "only the .txt file should be counted, not the .pdf");
-                assert_eq!(snapshot.completed, 1);
-                assert!(snapshot.errors.is_empty(), "errors: {:?}", snapshot.errors.iter().map(|e| &e.message).collect::<Vec<_>>());
+        let snapshot = wait_until_done(&app);
+        assert_eq!(snapshot.total, 1, "only the .txt file should be counted, not the .pdf");
+        assert_eq!(snapshot.completed, 1);
+        assert!(snapshot.errors.is_empty(), "errors: {:?}", snapshot.errors.iter().map(|e| &e.message).collect::<Vec<_>>());
 
-                // Individual file (new date/time/folder-name format) +
-                // merged file should both land in the output folder.
-                let kmz_files: Vec<_> = std::fs::read_dir(&output_dir)
-                    .unwrap()
-                    .filter_map(|e| e.ok())
-                    .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("kmz"))
-                    .collect();
-                assert_eq!(kmz_files.len(), 2, "expected one individual + one merged .kmz, found: {:?}", kmz_files.iter().map(|e| e.file_name()).collect::<Vec<_>>());
+        // The individual file (new date/time/folder-name format) should
+        // land somewhere under output_dir/KMZs/{project}/{date}/.
+        let kmzs_root = output_dir.join("KMZs");
+        assert!(kmzs_root.is_dir(), "expected a KMZs/ folder under the destination");
+        let kmz_files = find_kmz_files(&kmzs_root);
+        assert_eq!(kmz_files.len(), 1, "expected exactly one individual .kmz, found: {kmz_files:?}");
 
-                let merged = kmz_files.iter().find(|e| {
-                    e.file_name().to_string_lossy().contains("Flight_Logs")
-                });
-                assert!(merged.is_some(), "expected a merged file with 'Flight_Logs' in its name");
-                break;
-            }
-            assert!(Instant::now() < deadline, "conversion did not finish in time");
-            std::thread::sleep(Duration::from_millis(100));
-        }
+        // Pilot log spreadsheet should also have been written.
+        let pilot_log = output_dir.join("Pilot Logs").join("Flight Log.xlsx");
+        assert!(pilot_log.exists(), "expected Pilot Logs/Flight Log.xlsx to be created");
 
         let _ = std::fs::remove_dir_all(&input_dir);
         let _ = std::fs::remove_dir_all(&output_dir);
@@ -235,11 +275,9 @@ mod tests {
 
     /// Two copies of the same real log land on the identical computed
     /// output name (same embedded date/time, same folder) — this exercises
-    /// the collision-dedup suffix against real data, and confirms the
-    /// merged KMZ ends up with both flights as separate placemarks even
-    /// though they're same-day (single-date title, not a range).
+    /// the collision-dedup suffix against real data.
     #[test]
-    fn dedupes_identical_filenames_and_merges_both_flights() {
+    fn dedupes_identical_filenames() {
         let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures/sample.txt");
         if !fixture.exists() {
@@ -268,45 +306,17 @@ mod tests {
         };
         app.start_conversion();
 
-        let deadline = Instant::now() + Duration::from_secs(30);
-        loop {
-            let snapshot = app.progress.lock().unwrap().clone();
-            if snapshot.done {
-                assert_eq!(snapshot.completed, 2);
-                assert!(snapshot.errors.is_empty(), "errors: {:?}", snapshot.errors.iter().map(|e| &e.message).collect::<Vec<_>>());
+        let snapshot = wait_until_done(&app);
+        assert_eq!(snapshot.completed, 2);
+        assert!(snapshot.errors.is_empty(), "errors: {:?}", snapshot.errors.iter().map(|e| &e.message).collect::<Vec<_>>());
 
-                let kmz_files: Vec<String> = std::fs::read_dir(&output_dir)
-                    .unwrap()
-                    .filter_map(|e| e.ok())
-                    .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("kmz"))
-                    .map(|e| e.file_name().to_string_lossy().to_string())
-                    .collect();
-
-                // 2 individual (one deduped with " (2)") + 1 merged = 3 files.
-                assert_eq!(kmz_files.len(), 3, "found: {kmz_files:?}");
-                assert!(
-                    kmz_files.iter().any(|n| n.contains("(2)")),
-                    "expected a collision-deduped filename among: {kmz_files:?}"
-                );
-
-                let merged_name = kmz_files.iter().find(|n| n.contains("Flight_Logs"))
-                    .unwrap_or_else(|| panic!("expected a merged file among: {kmz_files:?}"));
-                // Both flights are the same day, so the title should carry
-                // a single date, not a "--" range.
-                assert!(!merged_name.contains("--"), "same-day merge shouldn't produce a date range: {merged_name}");
-
-                let merged_bytes = std::fs::read(output_dir.join(merged_name)).unwrap();
-                let mut archive = zip::ZipArchive::new(std::io::Cursor::new(merged_bytes)).unwrap();
-                let mut kml = String::new();
-                std::io::Read::read_to_string(&mut archive.by_name("doc.kml").unwrap(), &mut kml).unwrap();
-                let placemark_count = kml.matches("<Placemark>").count();
-                assert_eq!(placemark_count, 2, "merged KMZ should contain both flights as separate placemarks");
-
-                break;
-            }
-            assert!(Instant::now() < deadline, "conversion did not finish in time");
-            std::thread::sleep(Duration::from_millis(100));
-        }
+        let kmz_files = find_kmz_files(&output_dir.join("KMZs"));
+        // 2 individual files, one deduped with " (2)".
+        assert_eq!(kmz_files.len(), 2, "found: {kmz_files:?}");
+        assert!(
+            kmz_files.iter().any(|p| p.file_name().unwrap().to_string_lossy().contains("(2)")),
+            "expected a collision-deduped filename among: {kmz_files:?}"
+        );
 
         let _ = std::fs::remove_dir_all(&input_dir);
         let _ = std::fs::remove_dir_all(&output_dir);
@@ -343,44 +353,86 @@ mod tests {
         };
         app.start_conversion();
 
-        let deadline = Instant::now() + Duration::from_secs(30);
-        loop {
-            let snapshot = app.progress.lock().unwrap().clone();
-            if snapshot.done {
-                assert_eq!(snapshot.completed, 1);
-                assert!(snapshot.errors.is_empty(), "errors: {:?}", snapshot.errors.iter().map(|e| &e.message).collect::<Vec<_>>());
+        let snapshot = wait_until_done(&app);
+        assert_eq!(snapshot.completed, 1);
+        assert!(snapshot.errors.is_empty(), "errors: {:?}", snapshot.errors.iter().map(|e| &e.message).collect::<Vec<_>>());
 
-                let kmz_files: Vec<_> = std::fs::read_dir(&output_dir)
-                    .unwrap()
-                    .filter_map(|e| e.ok())
-                    .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("kmz"))
-                    .map(|e| e.file_name().to_string_lossy().to_string())
-                    .collect();
+        let kmz_files = find_kmz_files(&output_dir.join("KMZs"));
+        assert_eq!(kmz_files.len(), 1, "found: {kmz_files:?}");
+        let individual = &kmz_files[0];
 
-                // Location must come from "dji2kmz_pilot_test_input" (the
-                // selected root), NOT "Jane_Doe" (the pilot subfolder).
-                let individual = kmz_files.iter().find(|n| !n.contains("Flight_Logs"))
-                    .unwrap_or_else(|| panic!("expected an individual file among: {kmz_files:?}"));
-                assert!(
-                    individual.contains("dji2kmz_pilot_test_input"),
-                    "location should come from the root folder, not the pilot subfolder: {individual}"
-                );
-                assert!(
-                    !individual.contains("Jane_Doe"),
-                    "pilot subfolder name should not leak into the location naming: {individual}"
-                );
+        // Location must come from "dji2kmz_pilot_test_input" (the
+        // selected root), NOT "Jane_Doe" (the pilot subfolder).
+        let individual_name = individual.file_name().unwrap().to_string_lossy().to_string();
+        assert!(
+            individual_name.contains("dji2kmz_pilot_test_input"),
+            "location should come from the root folder, not the pilot subfolder: {individual_name}"
+        );
+        assert!(
+            !individual_name.contains("Jane_Doe"),
+            "pilot subfolder name should not leak into the location naming: {individual_name}"
+        );
 
-                let kml_bytes = std::fs::read(output_dir.join(individual)).unwrap();
-                let mut archive = zip::ZipArchive::new(std::io::Cursor::new(kml_bytes)).unwrap();
-                let mut kml = String::new();
-                std::io::Read::read_to_string(&mut archive.by_name("doc.kml").unwrap(), &mut kml).unwrap();
-                assert!(kml.contains("Pilot: Jane_Doe"), "description should carry the pilot's name: {kml}");
+        let kml_bytes = std::fs::read(individual).unwrap();
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(kml_bytes)).unwrap();
+        let mut kml = String::new();
+        std::io::Read::read_to_string(&mut archive.by_name("doc.kml").unwrap(), &mut kml).unwrap();
+        assert!(kml.contains("Pilot: Jane_Doe"), "description should carry the pilot's name: {kml}");
 
-                break;
-            }
-            assert!(Instant::now() < deadline, "conversion did not finish in time");
-            std::thread::sleep(Duration::from_millis(100));
+        let _ = std::fs::remove_dir_all(&input_dir);
+        let _ = std::fs::remove_dir_all(&output_dir);
+    }
+
+    /// Running conversion twice against the same destination must APPEND
+    /// to the pilot log rather than overwrite it — the crux of the
+    /// persistence requirement (byte-level correctness of the append is
+    /// already covered by dji2kmz_core::pilotlog's own tests; this just
+    /// confirms the native app actually reads the existing file back in
+    /// before writing, instead of always starting fresh).
+    #[test]
+    fn pilot_log_persists_across_two_separate_conversion_runs() {
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/sample.txt");
+        if !fixture.exists() {
+            eprintln!("skipping: tests/fixtures/sample.txt not present");
+            return;
         }
+
+        let input_dir = std::env::temp_dir().join("dji2kmz_pilotlog_persist_test_input");
+        let output_dir = std::env::temp_dir().join("dji2kmz_pilotlog_persist_test_output");
+        let _ = std::fs::remove_dir_all(&input_dir);
+        let _ = std::fs::remove_dir_all(&output_dir);
+        std::fs::create_dir_all(&input_dir).unwrap();
+        std::fs::create_dir_all(&output_dir).unwrap();
+        std::fs::copy(&fixture, input_dir.join("sample.txt")).unwrap();
+
+        let pilot_log_path = output_dir.join("Pilot Logs").join("Flight Log.xlsx");
+
+        let app = DjiKmzApp {
+            input_folder: Some(input_dir.clone()),
+            output_folder: Some(output_dir.clone()),
+            ..Default::default()
+        };
+        app.start_conversion();
+        wait_until_done(&app);
+        assert!(pilot_log_path.exists());
+        let first_run_bytes = std::fs::read(&pilot_log_path).unwrap();
+
+        // Second run against the same destination.
+        let app2 = DjiKmzApp {
+            input_folder: Some(input_dir.clone()),
+            output_folder: Some(output_dir.clone()),
+            ..Default::default()
+        };
+        app2.start_conversion();
+        let snapshot = wait_until_done(&app2);
+        assert!(snapshot.errors.is_empty(), "errors: {:?}", snapshot.errors.iter().map(|e| &e.message).collect::<Vec<_>>());
+
+        let second_run_bytes = std::fs::read(&pilot_log_path).unwrap();
+        assert!(
+            second_run_bytes.len() > first_run_bytes.len(),
+            "a second run appending another row should grow the workbook, not just rewrite the same content"
+        );
 
         let _ = std::fs::remove_dir_all(&input_dir);
         let _ = std::fs::remove_dir_all(&output_dir);
@@ -426,9 +478,9 @@ impl eframe::App for DjiKmzApp {
         });
 
         ui.horizontal(|ui| {
-            if ui.button("Choose Output Folder...").clicked() {
+            if ui.button("Choose Destination Folder...").clicked() {
                 if let Some(path) = rfd::FileDialog::new()
-                    .set_title("Select folder to save .kmz files into")
+                    .set_title("Select the destination folder (KMZs/ and Pilot Logs/ will be created inside it)")
                     .pick_folder()
                 {
                     self.output_folder = Some(path);
@@ -441,6 +493,13 @@ impl eframe::App for DjiKmzApp {
                     .unwrap_or_else(|| "No folder selected".to_string()),
             );
         });
+        ui.label(
+            egui::RichText::new(
+                "A KMZs/{project}/{date}/ folder and a Pilot Logs/Flight Log.xlsx spreadsheet are created inside whatever folder you choose here.",
+            )
+            .color(egui::Color32::GRAY)
+            .small(),
+        );
 
         ui.add_space(12.0);
 

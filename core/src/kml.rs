@@ -15,7 +15,7 @@ fn escape_cdata(s: &str) -> String {
     s.replace("]]>", "]]]]><![CDATA[>")
 }
 
-fn format_duration(total_secs: f64) -> String {
+pub(crate) fn format_duration(total_secs: f64) -> String {
     let secs = total_secs.round().max(0.0) as u64;
     let h = secs / 3600;
     let m = (secs % 3600) / 60;
@@ -52,14 +52,11 @@ pub fn build_kml(meta: &FlightMeta, stats: &FlightStats, points: &[(f64, f64, f6
 }
 
 /// One `<Placemark>` block for a single flight — the same content
-/// `build_kml` produces inside its `<Document>`, factored out so it can be
-/// repeated once per flight inside a merged multi-flight document too.
-/// `name` is passed explicitly rather than derived from `meta` — in a
-/// single-flight KMZ it's the flight's own display name, but in a merged
-/// multi-flight KMZ every flight from the same aircraft would otherwise
-/// share the identical `display_name`, making them indistinguishable in
-/// Google Earth's sidebar. Callers pass whatever name should actually
-/// label this placemark.
+/// `build_kml` produces inside its `<Document>`, factored out from it
+/// simply to keep `build_kml` itself short. `name` is passed explicitly
+/// rather than derived from `meta` since a flight's individual output
+/// filename (not `meta.display_name`, which is often identical across
+/// every flight from the same aircraft) is what should label it.
 fn placemark_block(name: &str, meta: &FlightMeta, stats: &FlightStats, points: &[(f64, f64, f64)]) -> String {
     let name = escape_xml(name);
     let coords = points
@@ -74,7 +71,10 @@ fn placemark_block(name: &str, meta: &FlightMeta, stats: &FlightStats, points: &
         non_empty(&meta.aircraft_name),
         non_empty(&meta.pilot),
         non_empty(&meta.battery_sn),
-        meta.start_time.to_rfc3339(),
+        // Explicit format (not `to_rfc3339()`) so a sub-second component in
+        // the parsed timestamp (DJI logs are millisecond-precision) never
+        // shows up as unwanted fractional seconds — whole seconds only.
+        meta.start_time.format("%Y-%m-%dT%H:%M:%SZ"),
         format_duration(stats.duration_secs),
         stats.total_distance_m,
         stats.max_altitude_m,
@@ -92,48 +92,6 @@ fn placemark_block(name: &str, meta: &FlightMeta, stats: &FlightStats, points: &
         <coordinates>{coords}</coordinates>
       </LineString>
     </Placemark>"#
-    )
-}
-
-/// Build one combined KML: a single `<Document>` with one shared line
-/// `<Style>` and one `<Placemark>` per flight. Each Placemark is
-/// independently toggleable in Google Earth's sidebar — no `<Folder>`
-/// wrapping needed for that — so this is effectively `build_kml` repeated
-/// once per flight inside one shared Document instead of one each.
-///
-/// `names[i]` labels `flights[i]`'s placemark — pass each flight's
-/// individual output filename (not `meta.display_name`, which is often
-/// identical across every flight from the same aircraft and wouldn't let
-/// someone tell placemarks apart in Google Earth's sidebar).
-pub fn build_merged_kml(
-    document_name: &str,
-    names: &[String],
-    flights: &[(FlightMeta, FlightStats, Vec<(f64, f64, f64)>)],
-) -> String {
-    let name = escape_xml(document_name);
-    let placemarks = names
-        .iter()
-        .zip(flights.iter())
-        .map(|(placemark_name, (meta, stats, points))| {
-            placemark_block(placemark_name, meta, stats, points)
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?>
-<kml xmlns="http://www.opengis.net/kml/2.2">
-  <Document>
-    <name>{name}</name>
-    <Style id="flightPath">
-      <LineStyle>
-        <color>ff0080ff</color>
-        <width>3</width>
-      </LineStyle>
-    </Style>
-{placemarks}
-  </Document>
-</kml>"#
     )
 }
 
@@ -203,43 +161,29 @@ mod tests {
     }
 
     #[test]
-    fn merged_kml_labels_placemarks_by_name_not_shared_aircraft_name() {
-        // Two flights from the same aircraft share an identical
-        // display_name — the merged doc must still distinguish them using
-        // the per-flight names passed in, not meta.display_name.
-        fn make_flight() -> (FlightMeta, FlightStats, Vec<(f64, f64, f64)>) {
-            let meta = FlightMeta {
-                display_name: "Lythix | Ninja".into(),
-                model: "Matrice350RTK".into(),
-                aircraft_sn: "SN123".into(),
-                aircraft_name: "Lythix | Ninja".into(),
-                battery_sn: "BAT123".into(),
-                start_time: chrono::Utc.with_ymd_and_hms(2026, 6, 15, 8, 18, 13).unwrap(),
-                pilot: "Jane Doe".into(),
-            };
-            let stats = FlightStats {
-                duration_secs: 60.0,
-                total_distance_m: 100.0,
-                max_altitude_m: 10.0,
-                max_speed_ms: 5.0,
-            };
-            (meta, stats, synthetic_points())
-        }
-
-        let flights = vec![make_flight(), make_flight()];
-        let names = vec![
-            "06-15-2026_08-18_Midland_Airport".to_string(),
-            "06-15-2026_09-30_Midland_Airport".to_string(),
-        ];
-
-        let kml = build_merged_kml("Midland_Airport_Flight_Logs_06-15-2026", &names, &flights);
-
-        assert_eq!(kml.matches("<Placemark>").count(), 2);
-        assert!(kml.contains("<name>06-15-2026_08-18_Midland_Airport</name>"));
-        assert!(kml.contains("<name>06-15-2026_09-30_Midland_Airport</name>"));
-        // The shared aircraft name should NOT appear as a placemark name —
-        // only inside each placemark's description box.
-        assert!(!kml.contains("<name>Lythix | Ninja</name>"));
+    fn start_time_has_no_fractional_seconds_even_with_sub_second_precision() {
+        let meta = FlightMeta {
+            display_name: "Test".into(),
+            model: "Test".into(),
+            aircraft_sn: "".into(),
+            aircraft_name: "".into(),
+            battery_sn: "".into(),
+            // DJI logs are millisecond-precision — a nonzero sub-second
+            // component must not leak into the description as fractional
+            // seconds (`to_rfc3339()` would include ".482" here).
+            start_time: chrono::Utc.with_ymd_and_hms(2026, 6, 15, 8, 18, 13).unwrap()
+                + chrono::Duration::milliseconds(482),
+            pilot: "".into(),
+        };
+        let stats = FlightStats {
+            duration_secs: 60.0,
+            total_distance_m: 100.0,
+            max_altitude_m: 10.0,
+            max_speed_ms: 5.0,
+        };
+        let kml = build_kml(&meta, &stats, &synthetic_points());
+        assert!(kml.contains("Start Time: 2026-06-15T08:18:13Z"));
+        assert!(!kml.contains("13.482"), "fractional seconds should not leak into Start Time");
     }
 
     #[test]

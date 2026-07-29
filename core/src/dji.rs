@@ -17,6 +17,7 @@ pub enum ConvertError {
     Kmz(String),
 }
 
+#[derive(Clone)]
 pub struct FlightMeta {
     pub display_name: String,
     pub model: String,
@@ -50,6 +51,7 @@ impl FlightMeta {
     }
 }
 
+#[derive(Clone)]
 pub struct FlightStats {
     pub duration_secs: f64,
     pub total_distance_m: f64,

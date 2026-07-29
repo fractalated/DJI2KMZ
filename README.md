@@ -12,12 +12,12 @@ fits:
 - **Native macOS app** — download and double-click, no install step.
 - **[Flight log viewer](https://fractalated.github.io/DJI2KMZ/viewer/)** —
   a separate, read-only page for browsing already-converted `.kmz` files
-  (e.g. on a shared network drive) sorted by date/location, with flight
+  (e.g. on a shared network drive), with a Project/Date sidebar and flight
   paths rendered over satellite imagery. See [below](#flight-log-viewer).
 - **[Pilot logbook](https://fractalated.github.io/DJI2KMZ/logbook/)** — a
-  separate, read-only page listing pilots with hours flown, drilling into
-  a per-pilot table (date/aircraft/location/duration) — a digital version
-  of a traditional paper logbook. See [below](#pilot-logbook).
+  separate, read-only page listing pilots with hours flown. Currently
+  secondary to the `Pilot Logs/Flight Log.xlsx` spreadsheet described
+  above — see [below](#pilot-logbook).
 
 The converter (all three ways of running it) shares the exact same
 conversion logic and is built from the same commit on every release, so
@@ -32,19 +32,46 @@ key. Older logs need no network access at all, on any version.
 
 1. Pick DJI `.txt` flight logs (native apps and web: point at a folder —
    everything except `.txt` files in it is ignored).
-2. Native apps: pick a folder to save into. Web version: converted files
-   are bundled into one `.zip` and downloaded, since browsers can't write
-   to an arbitrary chosen folder.
+2. Pick a destination folder — both native apps and the web version now
+   write directly into it (the web version uses the File System Access
+   API's read-write folder access, so nothing is zipped or downloaded
+   anymore).
 3. Click Convert. Each `.txt` becomes one `.kmz` file with the flight's GPS
    path, plus a description box containing drone model, serial numbers,
    pilot (see below), start time, duration, distance, max altitude, and
-   max speed. A combined multi-flight `.kmz` is also produced for the
-   whole batch, with every flight as a separately toggleable layer.
-4. Native apps: open the output folder directly from the app, or copy its
-   path.
+   max speed. Everything lands in a structured layout under the
+   destination folder:
+
+   ```
+   {destination}/
+     KMZs/
+       {Project Name}/            <- from the selected folder's name, filler
+                                      words ("Flight Logs" etc.) stripped
+         2026-06-15/
+           06-15-2026_08-18_....kmz   <- one per flight
+           06-15-2026_09-30_....kmz
+         2026-06-16/
+           ...
+     Pilot Logs/
+       Flight Log.xlsx             <- one tab per pilot, appended to on
+                                      every import run (see below)
+   ```
+4. Native apps: open the destination folder directly from the app, or
+   copy its path.
 
 One bad/corrupt log file is skipped (and reported) rather than stopping
 the whole batch.
+
+## Pilot log spreadsheet
+
+Every import run appends to `Pilot Logs/Flight Log.xlsx` inside the
+destination folder — one worksheet per pilot, columns Date, Takeoff Time,
+Landing Time, Flight Time, and Aircraft Type. It's read back and appended
+to (not overwritten) on every subsequent run, so it builds into a full
+logbook over time regardless of whether you're using the native app or
+the web version — both write to the exact same file format via the same
+shared logic. Flights with no pilot subfolder (see below) land under an
+"Unknown Pilot" tab.
 
 **Pilot attribution:** DJI flight logs don't record who was flying — there's
 no such field anywhere in the format. If you organize your `.txt` files
@@ -76,26 +103,39 @@ A separate, read-only page at
 `.kmz` files this converter has already produced — e.g. a shared folder or
 network drive everyone on a team has access to.
 
-- Click **Choose Folder** and point it at the folder containing your
-  converted `.kmz` files. The page reads them **directly from that
-  folder in your browser** — nothing is ever uploaded anywhere, so it's
-  safe to use with in-house-only data even though the page itself is
-  publicly hosted. Requires Chrome or Edge (uses the File System Access
-  API, not supported in Firefox/Safari). Your browser will remember the
-  folder for next time (re-confirming access once per session).
-- The sidebar lists one entry per subfolder, sorted by date — newest
-  first — derived entirely from filenames, so browsing is instant even
-  with a lot of data; nothing gets opened/parsed until you click into it.
-- Each location's flights show as a checklist, same as Google Earth's
-  Places panel — check one to draw its path on the map, uncheck to hide
-  it. If a folder has a merged `.kmz` (produced when converting a whole
-  folder at once), that's used automatically; otherwise every individual
-  `.kmz` in that folder is loaded.
+- Click **Choose Folder** and point it at the **`KMZs` folder** inside
+  your destination folder (not the destination folder itself — the
+  viewer only ever looks at `KMZs`, never `Pilot Logs`). The page reads
+  files **directly from that folder in your browser** — nothing is ever
+  uploaded anywhere, so it's safe to use with in-house-only data even
+  though the page itself is publicly hosted. Requires Chrome or Edge
+  (uses the File System Access API, not supported in Firefox/Safari).
+  Your browser will remember the folder for next time (re-confirming
+  access once per session); **Change Folder** switches to a different one
+  without reloading the page.
+- The sidebar is a **Project → Date** tree, matching the destination
+  layout above — derived entirely from folder names, so browsing is
+  instant even with a lot of data; nothing gets opened/parsed until you
+  click into it. Clicking a **project** name draws every flight across
+  all of its dates straight onto the map (click again to hide them all —
+  no per-flight checklist to click through, since a project's flight
+  count only grows over time); clicking a **date** underneath instead
+  shows a checklist scoped to just that day, for toggling individual
+  flights within it. (`.kmz` files sitting directly in `KMZs/` from
+  before this folder structure existed still show up, grouped under an
+  "Other" section at the bottom rather than disappearing.)
+- Each date's checklist works like Google Earth's Places panel — check a
+  flight to draw its path on the map, uncheck to hide it.
 - Satellite imagery is Esri World Imagery (free, no API key). Map
   rendering is [MapLibre GL JS](https://maplibre.org/).
 - View-only by design — no editing, no writing back to the source files.
 
 ## Pilot logbook
+
+**Currently secondary to the `Pilot Logs/Flight Log.xlsx` spreadsheet**
+described [above](#pilot-log-spreadsheet) — kept working, but not the
+primary way to check pilot hours for now. A future update will make this
+page the primary web-based view once the Excel output has proven itself.
 
 A separate, read-only page at
 [`/logbook/`](https://fractalated.github.io/DJI2KMZ/logbook/) — a digital
@@ -126,8 +166,11 @@ they only ever need to understand this project's own known, simple
 `.kmz`/KML shape.
 
 - `core/` — platform-agnostic parsing, GPS filtering, stats, KML/KMZ
-  building, pilot-subfolder extraction. No GUI, no HTTP, no wasm-specific
-  code.
+  building, pilot-subfolder extraction, destination folder/date naming,
+  and the pilot log spreadsheet (`pilotlog.rs`, via `rust_xlsxwriter` for
+  writing and `calamine` for reading an existing workbook back in before
+  appending — both wasm32-compatible, so this logic runs identically in
+  the native app and the web build). No GUI, no HTTP.
 - `native/` — the desktop app (`egui`/`eframe`). Package name `dji2kmz`.
 - `web/` — a `wasm-bindgen` crate exposing the same conversion logic to
   the browser, plus the static `index.html` converter frontend and two

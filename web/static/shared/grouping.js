@@ -38,6 +38,29 @@ export function dateKeyFromFilename(name) {
 }
 
 /**
+ * Parses a date directly out of a folder's own name, as a fallback for
+ * when nothing inside it has a filename DJI2KMZ's own regex recognizes
+ * (e.g. a folder organized before this project's naming conventions
+ * existed). Recognizes this project's own `YYYY-MM-DD` destination
+ * folders, plus common legacy shapes like `6-15-26` or `06-15-2026`
+ * (2-digit years assumed 20xx). Returns a sortable "YYYYMMDD", or `null`
+ * if the name doesn't look like a date at all.
+ */
+export function parseDateFromFolderName(name) {
+  let m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(name);
+  if (m) return `${m[1]}${m[2]}${m[3]}`;
+
+  m = /^(\d{1,2})-(\d{1,2})-(\d{2}|\d{4})$/.exec(name);
+  if (m) {
+    const [, mm, dd, yy] = m;
+    const yyyy = yy.length === 2 ? `20${yy}` : yy;
+    return `${yyyy}${mm.padStart(2, "0")}${dd.padStart(2, "0")}`;
+  }
+
+  return null;
+}
+
+/**
  * entries: [{file, folderKey, folderName}] from collectKmzFiles.
  * Returns sidebar-ready location entries, sorted newest-first.
  */
@@ -53,13 +76,20 @@ export function buildLocationEntries(entries) {
   const locations = [];
   for (const [folderKey, { folderName, files }] of byFolder) {
     const merged = files.find((f) => isMerged(f.name)) ?? null;
-    const dateKey = merged
-      ? dateKeyFromFilename(merged.name)
-      : files
-          .map((f) => dateKeyFromFilename(f.name))
-          .filter(Boolean)
-          .sort()
-          .at(-1); // latest flight represents the whole batch
+    // The flight log's own date (from its filename, the cheapest available
+    // proxy for its content — no need to open/parse the file just to
+    // group the sidebar) takes priority; the containing folder's name is
+    // only a fallback for names this project's own regex doesn't
+    // recognize, so a folder that's plainly named e.g. "6-15-26" doesn't
+    // show up as "Unknown date" when a clearly-encoded date is right there.
+    const dateKey =
+      (merged
+        ? dateKeyFromFilename(merged.name)
+        : files
+            .map((f) => dateKeyFromFilename(f.name))
+            .filter(Boolean)
+            .sort()
+            .at(-1)) ?? parseDateFromFolderName(folderName);
 
     locations.push({
       folderKey,
@@ -81,6 +111,57 @@ export function formatDateKey(dateKey) {
   const mm = dateKey.slice(4, 6);
   const dd = dateKey.slice(6, 8);
   return `${mm}/${dd}/${yyyy}`;
+}
+
+/** "2026-06-15" -> "06/15/2026", for sidebar display. */
+export function formatDateFolder(dateFolder) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateFolder);
+  if (!m) return dateFolder;
+  const [, yyyy, mm, dd] = m;
+  return `${mm}/${dd}/${yyyy}`;
+}
+
+/**
+ * Groups `buildLocationEntries`'s flat per-folder list into a
+ * Project -> Date tree, for the viewer's destination-folder layout
+ * (`KMZs/{project}/{date}/*.kmz` — the viewer is pointed at `KMZs`
+ * itself, so a location's `folderKey` there is `{project}/{date}`). The
+ * date comes straight from the folder name (an explicit `YYYY-MM-DD`
+ * directory, not something parsed out of filenames), which is also more
+ * reliable than filename parsing.
+ *
+ * A location with only one path segment doesn't fit this shape — e.g.
+ * `.kmz` files converted under the old flat convention, or the viewer
+ * pointed at the wrong folder — those fall into `ungrouped` instead of
+ * silently disappearing.
+ */
+export function buildProjectTree(entries) {
+  const locations = buildLocationEntries(entries);
+
+  const byProject = new Map();
+  const ungrouped = [];
+
+  for (const loc of locations) {
+    const segments = loc.folderKey.split("/");
+    if (segments.length < 2) {
+      ungrouped.push(loc);
+      continue;
+    }
+    const projectName = segments[0];
+    const dateFolder = segments[1];
+    if (!byProject.has(projectName)) {
+      byProject.set(projectName, { projectName, dates: [] });
+    }
+    byProject.get(projectName).dates.push({ ...loc, dateFolder });
+  }
+
+  const projects = Array.from(byProject.values());
+  for (const project of projects) {
+    project.dates.sort((a, b) => b.dateFolder.localeCompare(a.dateFolder)); // newest first
+  }
+  projects.sort((a, b) => a.projectName.localeCompare(b.projectName));
+
+  return { projects, ungrouped };
 }
 
 // folderKey -> Promise<placemark[]>. Module-scoped, so each page (viewer,

@@ -1,5 +1,5 @@
 import { pickDirectory, restoreDirectory, requestPermission, collectKmzFiles } from "../shared/fs.js";
-import { buildLocationEntries, formatDateKey, loadPlacemarks } from "../shared/grouping.js";
+import { buildProjectTree, formatDateKey, formatDateFolder, loadPlacemarks } from "../shared/grouping.js";
 import { initMap, setFlightLayer, removeFlightLayer, fitToCoordinates } from "./map.js";
 
 const connectRow = document.getElementById("connectRow");
@@ -31,89 +31,209 @@ function refitToVisible() {
   if (coords.length > 0) fitToCoordinates(map, coords);
 }
 
-async function renderChecklist(entry, container) {
+/**
+ * Renders a checklist of every flight across all of `entries` (a project's
+ * flights span multiple date-folder entries; a single date is just a
+ * one-element array) — each entry's flights load independently, so one
+ * date failing to load doesn't block the rest.
+ */
+async function renderChecklist(entries, container) {
   container.innerHTML = "Loading…";
-  let placemarks;
-  try {
-    placemarks = await loadPlacemarks(entry);
-  } catch (err) {
-    container.textContent = `Failed to load: ${err.message ?? err}`;
-    return;
+  const perEntryPlacemarks = [];
+  for (const entry of entries) {
+    try {
+      perEntryPlacemarks.push(await loadPlacemarks(entry));
+    } catch (err) {
+      console.warn(`Failed to load ${entry.folderKey}:`, err);
+      perEntryPlacemarks.push([]);
+    }
   }
 
   container.innerHTML = "";
   const list = document.createElement("div");
   list.className = "flight-checklist";
 
-  for (const pm of placemarks) {
-    const layerId = `${entry.folderKey}::${pm.name}`;
-    const label = document.createElement("label");
-    const checkbox = document.createElement("input");
-    checkbox.type = "checkbox";
-    checkbox.dataset.layerId = layerId;
-    checkbox.dataset.coords = JSON.stringify(pm.coordinates);
+  entries.forEach((entry, i) => {
+    for (const pm of perEntryPlacemarks[i]) {
+      const layerId = `${entry.folderKey}::${pm.name}`;
+      const label = document.createElement("label");
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.dataset.layerId = layerId;
+      checkbox.dataset.coords = JSON.stringify(pm.coordinates);
 
-    checkbox.addEventListener("change", () => {
-      if (checkbox.checked) {
-        setFlightLayer(map, layerId, pm.coordinates, colorFor(layerId));
-      } else {
-        removeFlightLayer(map, layerId);
+      checkbox.addEventListener("change", () => {
+        if (checkbox.checked) {
+          setFlightLayer(map, layerId, pm.coordinates, colorFor(layerId));
+        } else {
+          removeFlightLayer(map, layerId);
+        }
+        refitToVisible();
+      });
+
+      label.appendChild(checkbox);
+      label.appendChild(document.createTextNode(pm.name));
+      if (pm.meta.startTime) {
+        const small = document.createElement("small");
+        small.style.color = "#666";
+        small.style.marginLeft = "0.3em";
+        small.textContent = `(${pm.meta.duration ?? "?"}, ${pm.meta.distance ?? "?"})`;
+        label.appendChild(small);
       }
-      refitToVisible();
-    });
-
-    label.appendChild(checkbox);
-    label.appendChild(document.createTextNode(pm.name));
-    if (pm.meta.startTime) {
-      const small = document.createElement("small");
-      small.style.color = "#666";
-      small.style.marginLeft = "0.3em";
-      small.textContent = `(${pm.meta.duration ?? "?"}, ${pm.meta.distance ?? "?"})`;
-      label.appendChild(small);
+      list.appendChild(label);
     }
-    list.appendChild(label);
-  }
+  });
 
   container.appendChild(list);
 }
 
-function renderLocationList(locations) {
-  locationList.innerHTML = "";
-  for (const entry of locations) {
-    const wrapper = document.createElement("div");
-    wrapper.className = "location-entry";
+/** A button that toggles a lazily-loaded checklist of `entries` directly below it. */
+function appendToggleableChecklist(entries, button, parent) {
+  const detail = document.createElement("div");
+  detail.style.display = "none";
 
-    const button = document.createElement("button");
-    button.textContent = `${entry.folderName} — ${formatDateKey(entry.dateKey)}`;
+  button.addEventListener("click", () => {
+    const isOpen = detail.style.display !== "none";
+    detail.style.display = isOpen ? "none" : "block";
+    if (!isOpen && detail.dataset.loaded !== "true") {
+      detail.dataset.loaded = "true";
+      renderChecklist(entries, detail);
+    }
+  });
 
-    const detail = document.createElement("div");
-    detail.style.display = "none";
+  parent.appendChild(button);
+  parent.appendChild(detail);
+}
 
-    button.addEventListener("click", () => {
-      const isOpen = detail.style.display !== "none";
-      detail.style.display = isOpen ? "none" : "block";
-      if (!isOpen && detail.dataset.loaded !== "true") {
-        detail.dataset.loaded = "true";
-        renderChecklist(entry, detail);
+/**
+ * A button that draws every flight across `entries` straight onto the
+ * map — no checklist to click through — and hides them all again on a
+ * second click. Used for a project's own header, where the flight count
+ * across every date can grow large enough that a full checklist becomes
+ * unwieldy; a project only ever needs an all-or-nothing view like this,
+ * unlike a single date (still a checklist, so individual flights within
+ * one day stay toggleable).
+ */
+function appendMapOnlyToggle(entries, button, parent) {
+  let flights = null; // [{layerId, coords}], loaded lazily on first click
+  let visible = false;
+  const label = button.textContent;
+
+  button.addEventListener("click", async () => {
+    if (flights === null) {
+      button.disabled = true;
+      button.textContent = `${label} (loading…)`;
+      flights = [];
+      for (const entry of entries) {
+        let placemarks;
+        try {
+          placemarks = await loadPlacemarks(entry);
+        } catch (err) {
+          console.warn(`Failed to load ${entry.folderKey}:`, err);
+          placemarks = [];
+        }
+        for (const pm of placemarks) {
+          flights.push({ layerId: `${entry.folderKey}::${pm.name}`, coords: pm.coordinates });
+        }
       }
-    });
+      button.textContent = label;
+      button.disabled = false;
+    }
 
-    wrapper.appendChild(button);
-    wrapper.appendChild(detail);
+    visible = !visible;
+    button.classList.toggle("active", visible);
+    for (const { layerId, coords } of flights) {
+      if (visible) {
+        setFlightLayer(map, layerId, coords, colorFor(layerId));
+      } else {
+        removeFlightLayer(map, layerId);
+      }
+    }
+    if (visible && flights.length > 0) {
+      fitToCoordinates(map, flights.map((f) => f.coords));
+    }
+  });
+
+  parent.appendChild(button);
+}
+
+/**
+ * Sidebar as a Project -> Date tree. Clicking a project name draws every
+ * flight across all of its dates straight onto the map (click again to
+ * hide them); clicking a date underneath instead shows that day's
+ * checklist, for toggling individual flights within it.
+ */
+function renderProjectTree({ projects, ungrouped }) {
+  locationList.innerHTML = "";
+
+  for (const project of projects) {
+    const wrapper = document.createElement("div");
+    wrapper.className = "project-entry";
+
+    const header = document.createElement("button");
+    header.className = "project-header";
+    header.textContent = project.projectName;
+    appendMapOnlyToggle(project.dates, header, wrapper);
+
+    const dateList = document.createElement("div");
+    dateList.className = "date-list";
+    for (const dateEntry of project.dates) {
+      const dateWrapper = document.createElement("div");
+      dateWrapper.className = "date-entry";
+      const dateButton = document.createElement("button");
+      dateButton.textContent = formatDateFolder(dateEntry.dateFolder);
+      appendToggleableChecklist([dateEntry], dateButton, dateWrapper);
+      dateList.appendChild(dateWrapper);
+    }
+    wrapper.appendChild(dateList);
+
     locationList.appendChild(wrapper);
+  }
+
+  if (ungrouped.length > 0) {
+    const heading = document.createElement("div");
+    heading.className = "ungrouped-heading";
+    heading.textContent = "Other (not in a project/date folder)";
+    locationList.appendChild(heading);
+
+    for (const entry of ungrouped) {
+      const wrapper = document.createElement("div");
+      wrapper.className = "location-entry";
+      const button = document.createElement("button");
+      button.textContent = `${entry.folderName} — ${formatDateKey(entry.dateKey)}`;
+      appendToggleableChecklist([entry], button, wrapper);
+      locationList.appendChild(wrapper);
+    }
   }
 }
 
+function renderConnected(handle) {
+  connectRow.innerHTML = `Connected: <strong>${handle.name}</strong> `;
+  const btn = document.createElement("button");
+  btn.textContent = "Change Folder";
+  btn.addEventListener("click", async () => {
+    try {
+      const newHandle = await pickDirectory();
+      await loadFromHandle(newHandle);
+    } catch (err) {
+      if (err.name !== "AbortError") {
+        connectRow.textContent = `Error: ${err.message ?? err}`;
+      }
+    }
+  });
+  connectRow.appendChild(btn);
+}
+
 async function loadFromHandle(handle) {
-  connectRow.innerHTML = `Connected: <strong>${handle.name}</strong>`;
+  renderConnected(handle);
   locationList.textContent = "Scanning folder…";
   const entries = await collectKmzFiles(handle);
-  const locations = buildLocationEntries(entries);
-  if (locations.length === 0) {
-    locationList.textContent = "No .kmz files found in this folder.";
+  const tree = buildProjectTree(entries);
+  if (tree.projects.length === 0 && tree.ungrouped.length === 0) {
+    locationList.textContent = "No .kmz files found in this folder — point this at the KMZs folder inside your destination.";
     return;
   }
-  renderLocationList(locations);
+  renderProjectTree(tree);
 }
 
 function renderChooseButton() {
