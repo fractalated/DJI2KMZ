@@ -113,14 +113,6 @@ export function formatDateKey(dateKey) {
   return `${mm}/${dd}/${yyyy}`;
 }
 
-/** "2026-06-15" -> "06/15/2026", for sidebar display. */
-export function formatDateFolder(dateFolder) {
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateFolder);
-  if (!m) return dateFolder;
-  const [, yyyy, mm, dd] = m;
-  return `${mm}/${dd}/${yyyy}`;
-}
-
 /**
  * Groups `buildLocationEntries`'s flat per-folder list into a
  * Project -> Date tree, for the viewer's destination-folder layout
@@ -193,4 +185,41 @@ export function loadPlacemarks(entry) {
     );
   }
   return flightCache.get(entry.folderKey);
+}
+
+const labeledFlightCache = new Map();
+
+/**
+ * Like `loadPlacemarks`, but pairs each placemark with a label that's
+ * guaranteed to carry a date/time. A merged KMZ's placemarks are already
+ * named by their source flight's own filename (date-encoded — see the
+ * module comment), but an *individual* KMZ's placemark is named by
+ * aircraft display name instead (e.g. "Lythix | Ninja"), which doesn't
+ * distinguish one flight from another the same aircraft flew on a
+ * different day — the source file's own name is used as the label in
+ * that case instead. Used by the viewer's flat per-project flight list,
+ * where many same-aircraft flights across many dates end up in one list
+ * together.
+ */
+export function loadLabeledPlacemarks(entry) {
+  if (!labeledFlightCache.has(entry.folderKey)) {
+    labeledFlightCache.set(
+      entry.folderKey,
+      (async () => {
+        if (entry.mergedFile) {
+          const placemarks = parseKml(await readKmlFromKmz(entry.mergedFile));
+          return placemarks.map((pm) => ({ pm, label: pm.name }));
+        }
+        const results = [];
+        for (const file of entry.individualFiles) {
+          const placemarks = parseKml(await readKmlFromKmz(file));
+          for (const pm of placemarks) {
+            results.push({ pm, label: file.name.replace(/\.kmz$/i, "") });
+          }
+        }
+        return results;
+      })(),
+    );
+  }
+  return labeledFlightCache.get(entry.folderKey);
 }

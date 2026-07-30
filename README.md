@@ -103,29 +103,29 @@ A separate, read-only page at
 `.kmz` files this converter has already produced — e.g. a shared folder or
 network drive everyone on a team has access to.
 
-- Click **Choose Folder** and point it at the **`KMZs` folder** inside
-  your destination folder (not the destination folder itself — the
-  viewer only ever looks at `KMZs`, never `Pilot Logs`). The page reads
-  files **directly from that folder in your browser** — nothing is ever
-  uploaded anywhere, so it's safe to use with in-house-only data even
-  though the page itself is publicly hosted. Requires Chrome or Edge
-  (uses the File System Access API, not supported in Firefox/Safari).
-  Your browser will remember the folder for next time (re-confirming
-  access once per session); **Change Folder** switches to a different one
+- **One-time setup only:** click **Connect** and select the **`KMZs`
+  folder** inside your destination folder (not the destination folder
+  itself — the viewer only ever looks at `KMZs`, never `Pilot Logs`).
+  Your browser remembers this afterward, so this is the only time
+  anyone using the page needs to know where the files actually live —
+  every visit after that just shows a list of projects. Requires Chrome
+  or Edge (uses the File System Access API, not supported in
+  Firefox/Safari). **Change Connection** switches to a different folder
   without reloading the page.
-- The sidebar is a **Project → Date** tree, matching the destination
-  layout above — derived entirely from folder names, so browsing is
-  instant even with a lot of data; nothing gets opened/parsed until you
-  click into it. Clicking a **project** name draws every flight across
-  all of its dates straight onto the map (click again to hide them all —
-  no per-flight checklist to click through, since a project's flight
-  count only grows over time); clicking a **date** underneath instead
-  shows a checklist scoped to just that day, for toggling individual
-  flights within it. (`.kmz` files sitting directly in `KMZs/` from
-  before this folder structure existed still show up, grouped under an
-  "Other" section at the bottom rather than disappearing.)
-- Each date's checklist works like Google Earth's Places panel — check a
-  flight to draw its path on the map, uncheck to hide it.
+- The sidebar is a flat list of **projects** — one per subfolder of
+  `KMZs`, derived entirely from folder names, so browsing is instant even
+  with a lot of data; nothing gets opened/parsed until you click into it.
+  Clicking a project **opens every flight it has** (across all its
+  dates) at once — already checked and drawn on the map, no manual
+  selecting required — with **Select all**/**Deselect all** above that
+  project's own list for quickly narrowing down from there. A **Clear
+  All Selections** button above the whole project list hides everything
+  currently shown, handy when switching between projects. (`.kmz` files
+  sitting directly in `KMZs/` from before this folder structure existed
+  still show up, grouped under an "Other" section at the bottom rather
+  than disappearing.)
+- Each flight's checkbox works like Google Earth's Places panel — check
+  one to draw its path on the map, uncheck to hide it.
 - Satellite imagery is Esri World Imagery (free, no API key). Map
   rendering is [MapLibre GL JS](https://maplibre.org/).
 - View-only by design — no editing, no writing back to the source files.

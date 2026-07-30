@@ -12,36 +12,29 @@
     #sidebar h1 { font-size: 1.1rem; margin: 0 0 0.75rem; }
     #map { flex: 1 1 auto; position: relative; }
     button { padding: 0.5rem 1rem; cursor: pointer; }
-    .location-entry { margin-bottom: 0.25rem; }
-    .location-entry button { width: 100%; text-align: left; background: none; border: none; padding: 0.4rem 0; cursor: pointer; font: inherit; }
-    .location-entry button:hover { color: #0080ff; }
     .project-entry { margin-bottom: 0.5rem; }
     .project-header { width: 100%; text-align: left; background: none; border: none; padding: 0.4rem 0; cursor: pointer; font: inherit; font-weight: 600; }
     .project-header:hover { color: #0080ff; }
-    .project-header.active { color: #0080ff; }
-    .project-header.active::after { content: " ✓"; }
-    .project-header:disabled { cursor: wait; opacity: 0.6; }
-    .date-list { padding-left: 1rem; }
-    .date-entry button { width: 100%; text-align: left; background: none; border: none; padding: 0.3rem 0; cursor: pointer; font: inherit; font-size: 0.92em; color: #444; }
-    .date-entry button:hover { color: #0080ff; }
     .ungrouped-heading { margin: 0.75rem 0 0.25rem; font-size: 0.85em; color: #666; border-top: 1px solid #ddd; padding-top: 0.5rem; }
+    .select-all-controls { display: flex; gap: 0.75rem; padding-left: 1rem; margin: 0.25rem 0; }
+    .select-all-controls button { padding: 0.15rem 0; background: none; border: none; color: #0080ff; cursor: pointer; font: inherit; font-size: 0.85em; text-decoration: underline; }
     .flight-checklist { padding-left: 1rem; margin: 0.25rem 0 0.75rem; }
     .flight-checklist label { display: flex; align-items: flex-start; gap: 0.4rem; font-size: 0.9em; padding: 0.15rem 0; cursor: pointer; }
-    #connectRow { margin-bottom: 1rem; }
+    #connectRow { margin-bottom: 1rem; font-size: 0.85em; color: #666; }
+    #clearAllBtn { width: 100%; margin: 0 0 1rem; background: #f4f4f4; border: 1px solid #ddd; border-radius: 4px; }
+    #clearAllBtn:hover { background: #eee; }
   </style>
 </head>
 <body>
   <div id="sidebar">
     <h1>DJI2KMZ — Viewer</h1>
     <p style="color:#666; font-size:0.85em; margin-top:-0.5rem;">
-      Read-only. Point this at the <code>KMZs</code> folder inside your
-      destination folder — reads .kmz files directly from it in your
-      browser; nothing is ever uploaded anywhere. Click a project name to
-      draw every flight across all its dates on the map (click again to
-      hide them), or a date underneath it for a checklist of just that
-      day's flights.
+      Read-only — nothing is ever uploaded anywhere. Click a project to
+      open every flight it has, already selected and shown on the map;
+      uncheck any you don't want, or use Select all/Deselect all.
     </p>
     <div id="connectRow"></div>
+    <button type="button" id="clearAllBtn">Clear All Selections</button>
     <div id="locationList"></div>
   </div>
   <div id="map"></div>
