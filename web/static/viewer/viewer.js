@@ -162,6 +162,7 @@ function appendProjectPanel(displayName, entries, wrapper) {
   header.textContent = displayName;
 
   const panel = document.createElement("div");
+  panel.className = "project-panel";
   panel.style.display = "none";
 
   header.addEventListener("click", async () => {
@@ -212,6 +213,12 @@ clearAllBtn.addEventListener("click", () => {
   for (const cb of document.querySelectorAll(".flight-checklist input:checked")) {
     cb.checked = false;
     cb.dispatchEvent(new Event("change"));
+  }
+  // Collapse every project's panel too, not just clear its selections —
+  // keeps the sidebar navigable as more projects pile up, rather than
+  // leaving every previously-opened one expanded.
+  for (const panel of document.querySelectorAll(".project-panel")) {
+    panel.style.display = "none";
   }
 });
 
