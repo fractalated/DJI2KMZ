@@ -103,15 +103,17 @@ A separate, read-only page at
 `.kmz` files this converter has already produced — e.g. a shared folder or
 network drive everyone on a team has access to.
 
-- **One-time setup only:** click **Connect** and select the **`KMZs`
-  folder** inside your destination folder (not the destination folder
-  itself — the viewer only ever looks at `KMZs`, never `Pilot Logs`).
-  Your browser remembers this afterward, so this is the only time
-  anyone using the page needs to know where the files actually live —
-  every visit after that just shows a list of projects. Requires Chrome
-  or Edge (uses the File System Access API, not supported in
-  Firefox/Safari). **Change Connection** switches to a different folder
-  without reloading the page.
+- **One-time setup only:** click **Connect** and select
+  `O:\Flight Logs Output (Do Not Put Files Here)\KMZs` (not the
+  destination folder itself — the viewer only ever looks at `KMZs`, never
+  `Pilot Logs`). Your browser remembers this afterward, so this is the
+  only time anyone using the page needs to know where the files actually
+  live — every visit after that just shows a list of projects, with no
+  folder or connection choice exposed anywhere in the page. Requires
+  Chrome or Edge (uses the File System Access API, not supported in
+  Firefox/Safari). This location is fixed in the page itself, not a user
+  setting — if it ever needs to change, that's a code change, not
+  something end users can do.
 - The sidebar is a flat list of **projects** — one per subfolder of
   `KMZs`, derived entirely from folder names, so browsing is instant even
   with a lot of data; nothing gets opened/parsed until you click into it.

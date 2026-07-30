@@ -222,21 +222,13 @@ clearAllBtn.addEventListener("click", () => {
   }
 });
 
+// This page always points at one fixed location — end users never pick
+// or change a folder. If that location ever needs to change, it's a code
+// change here, not something exposed as a UI option.
+const DESTINATION_HINT = String.raw`O:\Flight Logs Output (Do Not Put Files Here)\KMZs`;
+
 function renderConnected(handle) {
-  connectRow.innerHTML = `Connected: <strong>${handle.name}</strong> `;
-  const btn = document.createElement("button");
-  btn.textContent = "Change Connection";
-  btn.addEventListener("click", async () => {
-    try {
-      const newHandle = await pickDirectory();
-      await loadFromHandle(newHandle);
-    } catch (err) {
-      if (err.name !== "AbortError") {
-        connectRow.textContent = `Error: ${err.message ?? err}`;
-      }
-    }
-  });
-  connectRow.appendChild(btn);
+  connectRow.textContent = `Connected: ${handle.name}`;
 }
 
 async function loadFromHandle(handle) {
@@ -245,7 +237,7 @@ async function loadFromHandle(handle) {
   const entries = await collectKmzFiles(handle);
   const tree = buildProjectTree(entries);
   if (tree.projects.length === 0 && tree.ungrouped.length === 0) {
-    locationList.textContent = "No .kmz files found — make sure you connected the KMZs folder inside your destination.";
+    locationList.textContent = `No .kmz files found — make sure "${DESTINATION_HINT}" was selected.`;
     return;
   }
   renderProjectTree(tree);
@@ -269,10 +261,11 @@ function renderChooseButton() {
 
   // Only shown before the one-time setup — the browser's own folder
   // dialog can't be skipped or pre-navigated from JS, but this is the
-  // only time it's needed; every visit after this just shows projects.
+  // only time it's needed; every visit after this just shows projects,
+  // with no further folder/connection choices exposed anywhere.
   const hint = document.createElement("p");
   hint.style.cssText = "margin: 0.5rem 0 0; font-size: 0.85em; color: #666;";
-  hint.textContent = 'One-time setup: select the "KMZs" folder inside your flight log destination. Your browser will remember it after this.';
+  hint.textContent = `One-time setup: select "${DESTINATION_HINT}". Your browser will remember it after this.`;
   connectRow.appendChild(hint);
 }
 
